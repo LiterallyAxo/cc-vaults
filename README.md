@@ -150,8 +150,11 @@ manager's install/update/startup behaviour against a fake GitHub.
 ## Repo layout
 
 ```
-vaults.lua        the package manager (installed as vaults.lua)
-manifest.txt      name | file | version | description, one script per line
-scripts/stock.lua the dashboard (installed as stock.lua)
-tests/            CC emulator, test suites, terminal preview tool
+vaults.lua          the package manager (installed as vaults.lua)
+manifest.txt        name | file | version | description, one script per line
+scripts/stock.lua   the dashboard (installed as stock.lua)
+tests/              CC emulator, test suites, terminal preview tool
+docs/               offline CC: Tweaked + CC:C Bridge reference (docs/README.md)
+tools/fetch_docs.py refreshes docs/ from the upstream sites
+CLAUDE.md           notes for working in this repo
 ```
