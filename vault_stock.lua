@@ -40,15 +40,15 @@ if isColor then
     bandText = colors.white,
     accent = colors.cyan, accent2 = colors.lightBlue,
     pos  = colors.lime,   neg  = colors.red,     qty = colors.yellow,
-    warn = colors.orange, sel  = colors.magenta,
+    warn = colors.orange,
     tags = { colors.cyan, colors.lightBlue, colors.magenta, colors.lime,
              colors.orange, colors.pink, colors.green, colors.purple },
   }
 else
-  local w, b, g, l = colors.white, colors.black, colors.gray, colors.lightGray
+  local w, b, l = colors.white, colors.black, colors.lightGray
   theme = {
     base = b, panel = b, alt = b, text = w, muted = l, band = w, bandText = b,
-    accent = w, accent2 = l, pos = w, neg = l, qty = w, warn = w, sel = g,
+    accent = w, accent2 = l, pos = w, neg = l, qty = w, warn = w,
     tags = { w },
   }
 end
@@ -132,10 +132,9 @@ function Canvas:rect(x, y, w, h, bg)
   local b = blitOf[bg]
   for yy = y, y + h - 1 do
     if yy >= 1 and yy <= self.h then
-      local ch, fgr, bgr = self.ch[yy], self.fg[yy], self.bg[yy]
+      local ch, bgr = self.ch[yy], self.bg[yy]
       for xx = math.max(1, x), math.min(self.w, x + w - 1) do
         ch[xx], bgr[xx] = " ", b
-        fgr[xx] = fgr[xx]
       end
     end
   end
@@ -750,10 +749,8 @@ local function act(action, payload)
   elseif action == "refresh" then
     refresh()
     return
-  elseif action ~= nil then
-    return
   else
-    return
+    return          -- nil, or a zone with nothing bound to it
   end
   draw()
 end
