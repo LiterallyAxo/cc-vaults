@@ -14,6 +14,7 @@ being asked, and confirm the raw URL serves the new content.
 vaults.lua          package manager; installed on the computer as vaults.lua
 manifest.txt        name | file | version | description, one line per script
 scripts/stock.lua   Create vault dashboard; installed as stock.lua, run as `stock`
+scripts/rail.lua    UK style train boards for Create trains; run as `rail [mode]`
 docs/               offline CC: Tweaked and CC:C Bridge docs (see docs/README.md)
 tests/              CC emulator, test suites, terminal preview tool
 tools/fetch_docs.py refreshes docs/
@@ -29,6 +30,7 @@ lua tests/run.lua                      # whole suite, must be green before pushi
 luac -p vaults.lua scripts/*.lua       # syntax check
 lua tests/preview.lua stock 121 18     # render a view in the terminal, in colour
 lua tests/preview.lua movers|vaults|detail [w] [h]
+lua tests/preview.lua departures|arrivals|platform|summary|onboard|route|concourse
 python tools/fetch_docs.py             # refresh docs/
 ```
 
@@ -51,8 +53,12 @@ carries its own `VERSION` constant that must match its manifest line, and
 `tests/cc_mock.lua` emulates CC: Tweaked — peripherals, monitors, the event
 queue, `fs`, `http`, `shell` — and captures every `blit`.
 
-- `mock.newEnv{ vaults=…, files=…, urls=…, events=…, width=, height=, color=, noHttp= }`
-  then `H.runOk(env, script, ...args)`.
+- `mock.newEnv{ vaults=…, stations=…, sources=…, modem=…, time=…, files=…,
+  urls=…, events=…, width=, height=, color=, noHttp= }` then
+  `H.runOk(env, script, ...args)`.  `stations` fakes Create Train Stations,
+  `sources` fakes CC:C Bridge Source Blocks (read back with `env.sourceText`),
+  `modem` turns `rednet` on (sends land in `env.rednetSent`), `time` is
+  `os.time()` in Minecraft hours.
 - Scripts run to completion: the event queue is drained, then the mock feeds one
   `key q` to break the main loop.
 - An `events` entry may be a **function**, which is called with `env` so a test
@@ -81,6 +87,13 @@ Full docs are in `docs/` — grep there before guessing. The ones that bite:
   precision. Other sub-character glyphs live in 128-159.
 - Peripheral names look like `create:item_vault_0`; `peripheral.getType` can
   return several types, so iterate them.
+- Create's Train Station peripheral (`Create_Station`) only answers
+  `getSchedule()` while a train is actually standing there, and the schedule's
+  `create:destination` entries are *filters*, so `Kings Cross *` matches every
+  platform there. `rail` caches the calling pattern per platform because of it.
+- Blocks on a moving Create contraption are not ticked, so a computer inside an
+  assembled train is dead until it is disassembled — onboard displays have to
+  be driven from the lineside.
 
 The server also runs **CC:C Bridge**, so `create_source`, `create_target`,
 `scroller`, `redrouter` and animatronic peripherals are available — that is the

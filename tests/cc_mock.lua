@@ -244,6 +244,11 @@ end
 --   sizes    = { ["create:item_vault_0"] = 27 }
 --   broken   = { ["create:item_vault_3"] = true }   -- list() throws
 --   extras   = { ["monitor_1"] = "monitor" }        -- other peripherals
+--   stations = { ["create:track_station_0"] = { name=, present=, train=,
+--                                               imminent=, enroute=, schedule= } }
+--   sources  = { ["create_source_0"] = { width = 24, height = 3 } }
+--   modem    = "modem_0"                            -- makes rednet work
+--   time     = 15.5                                 -- os.time(), in hours
 --   width/height/color, events, files, urls
 function mock.newEnv(opts)
   opts = opts or {}
@@ -271,13 +276,32 @@ function mock.newEnv(opts)
   env.removeVault = function(name) vaults[name] = nil end
   env.breakVault = function(name, isBroken) broken[name] = isBroken end
 
+  -- Create train stations and CC:C Bridge display sources
+  local stations, sources = {}, {}
+  for name, data in pairs(opts.stations or {}) do stations[name] = data end
+  for name, data in pairs(opts.sources or {}) do
+    sources[name] = { width = data.width or 24, height = data.height or 3, lines = {} }
+  end
+  env.stations = stations
+  env.sources = sources
+  env.setStation = function(name, data) stations[name] = data end
+  env.sourceText = function(name)
+    local source = sources[name]
+    if not source then return nil end
+    return table.concat(source.lines, "\n")
+  end
+
+  local modemName = opts.modem
   local monitorName = opts.monitorName
   if monitorName == nil then monitorName = "monitor_0" end
 
   local function peripheralNames()
     local names = {}
     for name in pairs(vaults) do names[#names + 1] = name end
+    for name in pairs(stations) do names[#names + 1] = name end
+    for name in pairs(sources) do names[#names + 1] = name end
     for name in pairs(opts.extras or {}) do names[#names + 1] = name end
+    if modemName then names[#names + 1] = modemName end
     if monitorName then names[#names + 1] = monitorName end
     table.sort(names)
     return names
@@ -285,6 +309,9 @@ function mock.newEnv(opts)
 
   local function typeOf(name)
     if vaults[name] then return "create:item_vault", "inventory" end
+    if stations[name] then return "Create_Station" end
+    if sources[name] then return "create_source" end
+    if name == modemName then return "modem" end
     if name == monitorName then return "monitor" end
     local extra = (opts.extras or {})[name]
     if extra then return extra end
@@ -292,7 +319,18 @@ function mock.newEnv(opts)
   end
 
   local monitorApi
+  local wrapped = {}          -- so peripheral.getName can recognise a wrapper
+  local build
   local function wrap(name)
+    if typeOf(name) == nil then
+      wrapped[name] = nil
+      return nil
+    end
+    if not wrapped[name] then wrapped[name] = build(name) end
+    return wrapped[name]
+  end
+
+  function build(name)
     if vaults[name] then
       return {
         list = function()
@@ -319,6 +357,44 @@ function mock.newEnv(opts)
           }
         end,
       }
+    end
+    if stations[name] then
+      local function field(key, fallback)
+        local value = stations[name][key]
+        if value == nil then return fallback end
+        return value
+      end
+      return {
+        getStationName  = function() return field("name", name) end,
+        setStationName  = function(value) stations[name].name = value end,
+        isTrainPresent  = function() return field("present", false) end,
+        isTrainImminent = function() return field("imminent", false) end,
+        isTrainEnroute  = function() return field("enroute", false) end,
+        getTrainName    = function() return field("train", nil) end,
+        hasSchedule     = function() return stations[name].schedule ~= nil end,
+        getSchedule     = function()
+          if not stations[name].present then error("there is no train here", 0) end
+          return stations[name].schedule
+        end,
+      }
+    end
+    if sources[name] then
+      local source = sources[name]
+      local cy = 1
+      return {
+        getSize = function() return source.width, source.height end,
+        clear = function() source.lines = {} end,
+        clearLine = function() source.lines[cy] = "" end,
+        setCursorPos = function(_, y) cy = math.floor(y) end,
+        getCursorPos = function() return 1, cy end,
+        setTextColour = function() end,
+        setBackgroundColour = function() end,
+        write = function(text) source.lines[cy] = (source.lines[cy] or "") .. tostring(text) end,
+        getLine = function(y) return source.lines[y] or "" end,
+      }
+    end
+    if name == modemName then
+      return { isWireless = function() return false end }
     end
     if name == monitorName then return monitorApi end
     return nil
@@ -373,9 +449,12 @@ function mock.newEnv(opts)
   local clock = 0
   local timerId = 0
 
+  local worldTime = opts.time or 6.0
+  env.setTime = function(hours) worldTime = hours end
+
   local osApi = {
     clock = function() clock = clock + 0.05 return clock end,
-    time = function() return 6.0 end,
+    time = function() return worldTime end,
     day = function() return 1 end,
     epoch = function() return 1700000000000 end,
     sleep = function() end,
@@ -415,6 +494,20 @@ function mock.newEnv(opts)
       local fns = { ... }
       if fns[1] then fns[1]() end
     end,
+  }
+
+  env.rednetSent = {}
+  local rednet = {
+    open = function(side) env.rednetOpen = side end,
+    close = function() env.rednetOpen = nil end,
+    isOpen = function() return env.rednetOpen ~= nil end,
+    broadcast = function(message, protocol)
+      env.rednetSent[#env.rednetSent + 1] = { message = message, protocol = protocol }
+    end,
+    send = function(id, message, protocol)
+      env.rednetSent[#env.rednetSent + 1] = { to = id, message = message, protocol = protocol }
+    end,
+    receive = function() return nil end,
   }
 
   local textutils = {
@@ -475,8 +568,9 @@ function mock.newEnv(opts)
     rawget = rawget, rawset = rawset, rawequal = rawequal, rawlen = rawlen,
     tonumber = tonumber, tostring = tostring, type = type, unpack = table.unpack,
     math = math, string = string, table = table, coroutine = coroutine,
+    load = load,
     -- cc apis
-    colors = COLORS, colours = COLORS, keys = KEYS,
+    colors = COLORS, colours = COLORS, keys = KEYS, rednet = rednet,
     peripheral = peripheral, parallel = parallel, textutils = textutils,
     fs = fsApi, http = http, shell = shell, term = termApi, os = osApi,
     sleep = function() end,

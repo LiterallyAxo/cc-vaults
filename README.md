@@ -20,6 +20,7 @@ stock
 | Name | What it is |
 | --- | --- |
 | [`stock`](scripts/stock.lua) | Live Create Item Vault dashboard on a monitor |
+| [`rail`](scripts/rail.lua) | UK style train information displays for Create trains |
 | [`vaults`](vaults.lua) | The package manager itself — it is in the manifest too, so it updates itself |
 
 More are coming; adding one is a single line in `manifest.txt`, no installer
@@ -130,6 +131,166 @@ Three CC: Tweaked features do the heavy lifting:
 Scanning runs `list()` on every vault in parallel (in batches of 50), so a
 network of dozens of vaults still refreshes in a single tick's worth of calls.
 
+---
+
+# rail — train information displays
+
+Boards for a Create railway, in the style of the ones on the British network.
+One script, several modes; you pick the mode that suits the screen you have
+just built.
+
+```
+ >>      CREATE CENTRAL            Departures                             15:26
+ Time  Destination                                             Plat  Expected
+ ------------------------------------------------------------------------------
+ 15:30 London Euston  via Coventry                             3      On time
+ 15:35 Manchester Piccadilly                                   5        15:42
+ 15:39 Cardiff Central                                         -    Cancelled
+ 15:44 Nottingham                                              8      On time
+ 15:48 Leamington Spa  via Solihull                            2      On time
+ 15:53 Liverpool Lime Street                                   4        15:56
+                                                            +2 later services
+ ------------------------------------------------------------------------------
+ See it. Say it. Sorted. Text the British Transport Police on 61016.
+```
+
+```
+rail                  departures board (the default)
+rail arrivals         arrivals board
+rail platform [n]     the big board at the end of a platform
+rail summary [n]      one line "next train" dot matrix
+rail onboard          in-carriage passenger information
+rail route            in-carriage route diagram
+rail concourse        station clock over the next departures
+rail flap             push the next departure onto Create displays
+rail hub              headless: read the stations, serve them by rednet
+rail setup            write a starter rail.cfg you can edit
+```
+
+## The modes
+
+| Mode | What it is on the real railway | Monitor it wants |
+| --- | --- | --- |
+| `departures` | the summary board over the concourse: Time / Destination / Plat / Expected, with a scrolling notice along the bottom | wide, 4×3 or bigger |
+| `arrivals` | the same board for trains coming in, listing where each one has come from | wide, 4×3 or bigger |
+| `platform` | the board at the platform end: the next train in full, its calling points scrolling underneath, then the ones after it | wide, 3×2 upwards |
+| `summary` | the little dot matrix over a doorway or on a platform post: one line, rotating between the train, its calling points and its formation | 2×1, even 1×1 |
+| `onboard` | the screen in the carriage — "This train is for … The next station is …" — rotating with the calling list and the welcome message | 3×2 |
+| `route` | the strip of dots in the vestibule showing where the train is along its route, with a list of stops and times | 3×3 or taller |
+| `concourse` | the station clock in big digits with the next few departures under it | 4×3 |
+| `flap` | not a monitor at all: writes the next departure onto Create flap displays, nixie tubes or a sign through CC:C Bridge | — |
+| `hub` | no display; reads every station on its network and broadcasts what it sees to the other computers | — |
+
+Every mode re-flows to whatever size it finds, and drops columns rather than
+overflowing: the platform column goes below 46 characters wide, the expected
+column below 34, and anything under three rows falls back to the one line
+layout. Press `Tab` on the computer to cycle the display modes while you decide
+which one you want.
+
+## What you need
+
+| Block | Why |
+| --- | --- |
+| Advanced Computer | runs the script; advanced so it can recolour the palette |
+| Advanced Monitor ×N | the board itself — basic monitors work, in grey |
+| Wired Modem (one per Train Station, one on the computer) | lets the computer read the stations |
+| Networking Cable | joins them up |
+| Create Train Station | the block that actually knows about the trains |
+| Ender Modem *(optional)* | for `rail hub`, if running cable to every board is a pain |
+| CC:C Bridge Source Block + Display Link *(optional)* | for `rail flap` |
+
+## Wiring
+
+```
+                      ┌── modem ── Train Station (platform 1)
+computer ── modem ────┼── modem ── Train Station (platform 2)
+    │   networking    └── modem ── Train Station (platform 3)
+    │   cable
+    └── monitor (placed against the computer, or on the same cable)
+```
+
+Right-click every modem until it turns red and says *"Peripheral … attached"* —
+an un-activated modem means the computer cannot see that station. Name each
+Train Station in game with its platform in the name (`Create Central Platform
+3`) and `rail` works the platform numbers out for itself; otherwise map them in
+`rail.cfg`.
+
+## rail.cfg
+
+`rail setup` writes a commented starter config to the computer. Everything you
+leave out keeps its default.
+
+| Option | Default | What it does |
+| --- | --- | --- |
+| `station` | `"Create Central"` | the station this display belongs to; also picks which Train Stations count as ours |
+| `code` | `"CRC"` | three letter station code |
+| `operator` | `"Create Rail"` | named on the onboard displays |
+| `theme` | `"dot"` | `"dot"` amber dot matrix, `"lcd"` the modern navy screens |
+| `clock` | `"mc"` | `"mc"` in-game time, `"real"` your own clock |
+| `platform` | `nil` | which platform a `platform` / `summary` display serves |
+| `refresh` | `5` | seconds between peripheral scans |
+| `scroll` | `0.4` | seconds per column of scrolling text |
+| `rows` | `0` | departures to list; `0` means as many as fit |
+| `dwell` / `legRun` | `1` / `6` | minutes a train stands, and minutes assumed between stops |
+| `platforms` | `{}` | Train Station peripheral (or in-game name) to platform number |
+| `timetable` | `{}` | the booked services; see below |
+| `train` / `route` | `nil` | onboard and route displays: the Create train name and the stations it works through |
+| `messages` | safety notices | the scrolling line along the bottom |
+| `demo` | `true` | invent a timetable when nothing is wired up |
+
+A timetable entry looks like a line out of a real one:
+
+```lua
+timetable = {
+  { depart = "15:26", platform = 3, coaches = 9, via = "Coventry",
+    origin = "Wolverhampton", operator = "Create West Coast",
+    calls = { "Coventry", "Rugby", "Milton Keynes Central", "London Euston" } },
+  { depart = "15:41", platform = 5, delay = 7,
+    calls = { "Stafford", "Crewe", "Manchester Piccadilly" } },
+  { depart = "15:52", platform = 10, cancelled = true,
+    calls = { "Newport", "Cardiff Central" } },
+}
+```
+
+`calls` ends with the final destination, which is what the board advertises.
+`delay` in minutes turns the Expected column into a time; `cancelled = true`
+greys the service out and takes its platform away.
+
+## Where the numbers come from
+
+In order of preference:
+
+1. **A timetable in `rail.cfg`.** Booked times are the skeleton. What the
+   stations report is laid over the top: the train standing at platform 3
+   becomes *that* service, and a booked train that has not turned up starts
+   running late by itself, which is the entire point of an Expected column.
+2. **The Train Stations alone.** A station peripheral only gives up its
+   schedule while a train is actually standing there, so `rail` reads the
+   calling points then and remembers them against that platform — after one
+   visit it can advertise the destination for every later train.
+   `create:destination` filters like `Kings Cross *` are matched properly, and
+   a cyclic schedule is followed round until it comes back here, which gives
+   the calling list and, backwards, the origin.
+3. **A `rail hub` on the network**, broadcasting what it can see to displays
+   that have no station of their own.
+4. **A demonstration timetable**, so a fresh computer still shows you a board.
+
+## Onboard displays
+
+Blocks on a moving Create contraption are not ticked, so a computer bolted
+inside an assembled train stops running until the train is taken apart. Run the
+onboard modes on a static carriage mock-up, on a platform, or in a waiting
+room; point them at a `hub` and set `train` in the config, and they follow the
+real train around the network as the stations report it.
+
+## Create flap displays
+
+`rail flap` writes to every CC:C Bridge **Source Block** on the network, which
+Create then paints onto a flap display, nixie tubes, a sign or a lectern
+through a Display Link. It sizes itself to the target: eight characters or
+fewer gets just the departure time, anything wider gets time, destination and
+status, with the platform and calling points on the second line.
+
 ## Development
 
 The repo ships a small CC: Tweaked emulator so the scripts can be tested and
@@ -137,12 +298,14 @@ previewed without launching Minecraft. You need a normal Lua 5.4 interpreter
 (`winget install DEVCOM.Lua`).
 
 ```
-lua tests/run.lua                    # 72 tests across the dashboard and manager
+lua tests/run.lua                    # 116 tests across both scripts and the manager
 lua tests/preview.lua stock 121 18   # render a view in your terminal, in colour
 lua tests/preview.lua movers|vaults|detail [width] [height]
+lua tests/preview.lua departures|arrivals|platform|summary|onboard|route|concourse
 ```
 
-`tests/cc_mock.lua` fakes peripherals, monitors, the event queue, `fs` and
+`tests/cc_mock.lua` fakes peripherals (vaults, Create train stations, CC:C
+Bridge display sources, modems), monitors, the event queue, `rednet`, `fs` and
 `http`, and captures every `blit` so tests can assert on what was drawn —
 layout rules, touch handling, the palette being restored on exit, and the
 manager's install/update/startup behaviour against a fake GitHub.
@@ -153,6 +316,7 @@ manager's install/update/startup behaviour against a fake GitHub.
 vaults.lua          the package manager (installed as vaults.lua)
 manifest.txt        name | file | version | description, one script per line
 scripts/stock.lua   the dashboard (installed as stock.lua)
+scripts/rail.lua    the train displays (installed as rail.lua)
 tests/              CC emulator, test suites, terminal preview tool
 docs/               offline CC: Tweaked + CC:C Bridge reference (docs/README.md)
 tools/fetch_docs.py refreshes docs/ from the upstream sites

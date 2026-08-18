@@ -1,6 +1,8 @@
 -- Renders the monitor to your terminal so you can see the layout without
 -- launching Minecraft:   lua tests/preview.lua [view] [width] [height]
---   view: stock | movers | vaults | detail
+--   stock: stock | movers | vaults | detail
+--   rail:  departures | arrivals | platform | summary | onboard | route
+--          | concourse
 local here = (arg and arg[0] or "tests/preview.lua"):gsub("[^/\\]+$", "")
 if here == "" then here = "./" end
 package.path = here .. "?.lua;" .. package.path
@@ -11,6 +13,79 @@ local keys = mock.KEYS
 local view   = (arg[1] or "stock"):lower()
 local width  = tonumber(arg[2]) or 82
 local height = tonumber(arg[3]) or 26
+
+--------------------------------------------------------------------- rail
+local RAIL = {
+  departures = true, arrivals = true, platform = true, summary = true,
+  onboard = true, route = true, concourse = true,
+}
+
+if RAIL[view] then
+  local schedule = {
+    cyclic = true,
+    entries = {
+      { instruction = { id = "create:destination", data = { text = "Create Central *" } } },
+      { instruction = { id = "create:destination", data = { text = "Coventry" } } },
+      { instruction = { id = "create:destination", data = { text = "Rugby" } } },
+      { instruction = { id = "create:destination", data = { text = "London Euston" } } },
+    },
+  }
+  local env = mock.newEnv({
+    width = width, height = height, time = 15.44,
+    stations = {
+      ["create:track_station_0"] = {
+        name = "Create Central Platform 3", present = true,
+        train = "1A23", schedule = schedule,
+      },
+      ["create:track_station_1"] = {
+        name = "Create Central Platform 5", enroute = true, train = "1M14",
+      },
+    },
+    events = {
+      -- let the ticker scroll a little before the frame is captured
+      { "timer", 2 }, { "timer", 2 }, { "timer", 2 }, { "timer", 2 },
+    },
+  })
+  local ok, err = env.run(here .. "../scripts/rail.lua", view)
+  if not ok then
+    io.write("script error: ", tostring(err), "\n")
+    os.exit(1)
+  end
+  local frame = env.frame
+  local palette = env.internals.palette
+  local HEX = "0123456789abcdef"
+  local rgbOf = {}
+  for i = 0, 15 do
+    local rgb = palette[2 ^ i] or 0x808080
+    rgbOf[HEX:sub(i + 1, i + 1)] = { (rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff }
+  end
+  -- CC draws with 2x3 block glyphs at 128-159; a terminal has the same shapes
+  -- in the Unicode sextant block, which skips the plain left half block
+  local function glyph(ch)
+    local byte = ch:byte()
+    if byte >= 128 and byte <= 159 then
+      local mask = byte - 128
+      if mask == 0 then return " " end
+      if mask == 21 then return utf8.char(0x258C) end
+      return utf8.char(0x1FB00 + (mask < 21 and mask - 1 or mask - 2))
+    end
+    if ch == "\7" then return utf8.char(0x25CF) end
+    return ch
+  end
+
+  io.write("\n")
+  for y = 1, frame.h do
+    io.write("  ")
+    for x = 1, frame.w do
+      local f, b = rgbOf[frame.fg[y][x]], rgbOf[frame.bg[y][x]]
+      io.write(string.format("\27[38;2;%d;%d;%dm\27[48;2;%d;%d;%dm",
+        f[1], f[2], f[3], b[1], b[2], b[3]), glyph(frame.ch[y][x]))
+    end
+    io.write("\27[0m\n")
+  end
+  io.write("\n")
+  return
+end
 
 local function stack(id, count, label) return { name = id, count = count, displayName = label } end
 
