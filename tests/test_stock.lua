@@ -3,7 +3,7 @@ local mock = require("cc_mock")
 local H = require("harness")
 local describe, it, eq = H.describe, H.it, H.eq
 
-local SCRIPT = (_G.ROOT or "") .. "vault_stock.lua"
+local SCRIPT = (_G.ROOT or "") .. "scripts/stock.lua"
 local keys = mock.KEYS
 
 local function item(name, count, display, maxCount)
@@ -460,5 +460,54 @@ describe("vault_stock: layout", function()
     H.screenHas(env.frame, "SPREAD ACROSS")
     H.screenLacks(env.frame, "Andesite Alloy", "rows behind the panel are cleared")
     H.screenHas(env.frame, "VAULT NETWORK", "the header stays put")
+  end)
+end)
+
+describe("vault_stock: the tab row", function()
+  local function tabRow(frame)
+    for y = 1, frame.h do
+      if frame:row(y):find("STOCK", 1, true) then return frame:row(y), y end
+    end
+  end
+
+  it("keeps the sort button clear of the tabs at every width", function()
+    for width = 30, 120, 2 do
+      local env = newEnv({ width = width, height = 16 })
+      H.runOk(env, SCRIPT)
+      local row = tabRow(env.frame)
+      H.truthy(row, "width " .. width .. ": tab row is drawn")
+      local vaultsAt = row:find("VAULTS", 1, true)
+      if vaultsAt then
+        local after = row:sub(vaultsAt + 6)
+        -- whatever follows the last tab must start after a gap, never on top
+        local sortAt = after:find("%S")
+        H.truthy(sortAt == nil or sortAt > 1,
+          "width " .. width .. ": sort button collides with the tabs -> " .. row)
+      end
+    end
+  end)
+
+  it("shortens the sort label rather than overlapping", function()
+    local wide = newEnv({ width = 60, height = 16 })
+    H.runOk(wide, SCRIPT)
+    H.contains(tabRow(wide.frame), "SORT: COUNT")
+
+    local narrow = newEnv({ width = 38, height = 16 })
+    H.runOk(narrow, SCRIPT)
+    local row = tabRow(narrow.frame)
+    H.contains(row, "VAULTS", "the last tab survives")
+    H.contains(row, "COUNT", "the sort mode is still readable")
+    H.falsy(row:find("SORT:", 1, true), "the prefix is dropped to make room")
+  end)
+
+  it("leaves inactive tabs unfilled so they do not merge with the header", function()
+    local env = newEnv({ width = 60, height = 16 })
+    H.runOk(env, SCRIPT)
+    local row, y = tabRow(env.frame)
+    local emptyBg = env.frame.bg[y][#row]          -- bare background of that row
+    local activeBg = env.frame.bg[y][row:find("STOCK", 1, true)]
+    local idleBg = env.frame.bg[y][row:find("MOVERS", 1, true)]
+    eq(idleBg, emptyBg, "an inactive tab sits on the plain background")
+    H.truthy(activeBg ~= emptyBg, "the active tab is filled")
   end)
 end)

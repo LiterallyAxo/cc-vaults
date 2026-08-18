@@ -1,5 +1,7 @@
 --[[
-  VAULT NETWORK  --  Create Item Vault stock monitor for CC: Tweaked
+  stock  --  Create Item Vault dashboard for CC: Tweaked            v1.2.0
+
+  Part of the cc-vaults package; install it with `vaults install stock`.
 
   Scans every Create Item Vault on the computer's peripheral network and
   renders a live dashboard on an attached monitor.
@@ -437,8 +439,10 @@ local function zone(x1, y1, x2, y2, action, payload)
                         action = action, payload = payload }
 end
 
+-- an inactive chip is left unfilled: a filled one would run straight into the
+-- panel-coloured stats rows above it and read as one solid block
 local function chip(x, y, label, active)
-  local bg = active and theme.accent or theme.panel
+  local bg = active and theme.accent or theme.base
   local fg = active and theme.base or theme.muted
   canvas:rect(x, y, #label + 2, 1, bg)
   canvas:text(x + 1, y, label, fg, bg)
@@ -502,11 +506,19 @@ local function drawHeader(w, compact)
     tx = chip(tx, y, name, state.view == i)
     zone(sx, y, tx - 2, y, "view", i)
   end
-  local sortLabel = "SORT: " .. SORTS[state.sort]
-  local sx = w - #sortLabel - 2
-  canvas:rect(sx, y, #sortLabel + 2, 1, theme.panel)
-  canvas:text(sx + 1, y, sortLabel, theme.accent2, theme.panel)
-  zone(sx, y, w, y, "sort")
+
+  -- the sort button shares the row with the tabs: shorten it, then drop it,
+  -- rather than letting it overwrite the last tab on a narrow display
+  local tabsEnd = tx - 2
+  for _, label in ipairs({ "SORT: " .. SORTS[state.sort], SORTS[state.sort] }) do
+    local sx = w - #label - 2
+    if sx > tabsEnd + 1 then
+      canvas:rect(sx, y, #label + 2, 1, theme.alt)
+      canvas:text(sx + 1, y, label, theme.accent2, theme.alt)
+      zone(sx, y, w, y, "sort")
+      break
+    end
+  end
 
   return y + 1
 end

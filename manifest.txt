@@ -1,0 +1,7 @@
+# vaults package manifest
+# one script per line:  name | file in the repo | version | description
+# `vaults` installs whatever is listed here, so adding a script is a one-line
+# change - no installer update needed.
+
+vaults | vaults.lua        | 2.0.0 | Installer and launcher for these scripts
+stock  | scripts/stock.lua | 1.2.0 | Live Create vault stock dashboard

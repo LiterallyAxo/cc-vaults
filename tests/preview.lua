@@ -73,7 +73,7 @@ local env = mock.newEnv({
   events = events,
 })
 
-local ok, err = env.run(here .. "../vault_stock.lua")
+local ok, err = env.run(here .. "../scripts/stock.lua")
 if not ok then
   io.write("script error: ", tostring(err), "\n")
   os.exit(1)
