@@ -489,6 +489,44 @@ describe("rail: odds and ends", function()
     H.contains(env.printed(), "already exists")
   end)
 
+  it("lists the stations it can see, and what stops there", function()
+    local env = newEnv({
+      stations = {
+        ["create:track_station_0"] = {
+          name = "Create Central Platform 3", present = true,
+          train = "1A23", schedule = eustonSchedule(),
+        },
+      },
+    })
+    H.runOk(env, SCRIPT, "stations")
+    local printed = env.printed()
+    H.contains(printed, "create:track_station_0")
+    H.contains(printed, "Create Central Platform 3")
+    H.contains(printed, "platform 3")
+    H.contains(printed, "[ours]")
+    H.contains(printed, "train standing")
+    H.contains(printed, "Coventry, Rugby, London Euston")
+  end)
+
+  it("says which way to look when no station is wired up", function()
+    local env = newEnv()
+    H.runOk(env, SCRIPT, "stations")
+    H.contains(env.printed(), "no create train stations")
+    H.contains(env.printed(), "modem")
+  end)
+
+  it("points at the station name when nothing matches the config", function()
+    local env = newEnv({
+      files = cfg('  station = "Somewhere Else",'),
+      stations = {
+        ["create:track_station_0"] = { name = "Create Central Platform 3" },
+      },
+    })
+    H.runOk(env, SCRIPT, "stations")
+    H.contains(env.printed(), "[not ours]")
+    H.contains(env.printed(), "Somewhere Else")
+  end)
+
   it("lists its modes when asked for help", function()
     local env = newEnv()
     H.runOk(env, SCRIPT, "help")

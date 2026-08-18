@@ -1,5 +1,5 @@
 --[[
-  rail  --  UK style train information displays for CC: Tweaked        v0.1.0
+  rail  --  UK style train information displays for CC: Tweaked        v0.2.0
 
   Part of the cc-vaults package; install it with `vaults install rail`.
 
@@ -18,6 +18,7 @@
     rail concourse          station clock over the next departures
     rail flap               push the next departure onto Create displays
     rail hub                headless: read the stations, serve them by rednet
+    rail stations           list what this computer can see, and why
     rail setup              write a starter rail.cfg you can edit
     rail help               this list
 
@@ -29,7 +30,7 @@
     right-click each modem until it says "peripheral attached", then a monitor
 ]]
 
-local VERSION = "0.1.0"
+local VERSION = "0.2.0"
 local CONFIG  = "rail.cfg"
 
 --------------------------------------------------------------------- config
@@ -1415,13 +1416,59 @@ mode = ALIASES[mode] or mode
 if mode == "help" or mode == "-h" or mode == "--help" then
   print("rail " .. VERSION .. " -- train information displays")
   print("modes: departures arrivals platform summary onboard route")
-  print("       concourse flap hub setup help")
-  print("run `rail setup` to write rail.cfg, then `rail <mode>`")
+  print("       concourse flap hub setup stations help")
+  print("run `rail stations` to see what is wired up,")
+  print("then `rail setup` to write rail.cfg, then `rail <mode>`")
   return
 end
 
 if mode == "setup" then
   writeTemplate(args[2] == "-f" or args[2] == "--force")
+  return
+end
+
+-- What the computer can actually see, which is the first thing to check when a
+-- board is empty: no stations means a modem is not switched on, and no [ours]
+-- means `station` in rail.cfg does not match what the stations are called.
+if mode == "stations" then
+  local names = stationNames()
+  if #names == 0 then
+    print("no create train stations on this network")
+    print("right-click every wired modem until it turns red")
+    return
+  end
+  local ours = 0
+  print(#names .. " station(s) visible from here:")
+  for _, name in ipairs(names) do
+    local station = readStation(name)
+    local mine = ownStation(station)
+    if mine then ours = ours + 1 end
+    print("")
+    print(name)
+    print("  called: " .. station.name)
+    print("  platform " .. station.platform .. (mine and "  [ours]" or "  [not ours]"))
+    local flags = {}
+    if station.present then flags[#flags + 1] = "train standing" end
+    if station.imminent then flags[#flags + 1] = "train imminent" end
+    if station.enroute then flags[#flags + 1] = "train enroute" end
+    if station.train then flags[#flags + 1] = "train " .. station.train end
+    if #flags > 0 then print("  " .. table.concat(flags, ", ")) end
+    if station.present then
+      local calls = onwardCalls(scheduleStops(station.schedule), station.name)
+      if #calls > 0 then
+        print("  calls at: " .. table.concat(calls, ", "))
+      else
+        print("  no schedule on this train")
+      end
+    end
+  end
+  print("")
+  if ours == 0 then
+    printError("none of these match station = \"" .. config.station .. "\"")
+    print("rename them, or set station / platforms in rail.cfg")
+  else
+    print(ours .. " of them count as " .. config.station)
+  end
   return
 end
 

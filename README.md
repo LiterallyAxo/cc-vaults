@@ -164,8 +164,32 @@ rail route            in-carriage route diagram
 rail concourse        station clock over the next departures
 rail flap             push the next departure onto Create displays
 rail hub              headless: read the stations, serve them by rednet
+rail stations         list what this computer can see, and why
 rail setup            write a starter rail.cfg you can edit
 ```
+
+`rail stations` is the one to run first, and the one to run when a board comes
+up empty:
+
+```
+2 station(s) visible from here:
+
+create:track_station_0
+  called: Create Central Platform 3
+  platform 3  [ours]
+  train standing, train 1A23
+  calls at: Coventry, Rugby, London Euston
+
+create:track_station_1
+  called: Create Central Platform 5
+  platform 5  [ours]
+  train enroute, train 1M14
+
+2 of them count as Create Central
+```
+
+No stations listed means a wired modem is not switched on. `[not ours]` means
+`station` in `rail.cfg` does not match what the stations are called in game.
 
 ## The modes
 
@@ -180,6 +204,7 @@ rail setup            write a starter rail.cfg you can edit
 | `concourse` | the station clock in big digits with the next few departures under it | 4×3 |
 | `flap` | not a monitor at all: writes the next departure onto Create flap displays, nixie tubes or a sign through CC:C Bridge | — |
 | `hub` | no display; reads every station on its network and broadcasts what it sees to the other computers | — |
+| `stations` | no display; prints every Train Station this computer can see, what stops there and whether it counts as ours | — |
 
 Every mode re-flows to whatever size it finds, and drops columns rather than
 overflowing: the platform column goes below 46 characters wide, the expected
@@ -299,7 +324,7 @@ previewed without launching Minecraft. You need a normal Lua 5.4 interpreter
 (`winget install DEVCOM.Lua`).
 
 ```
-lua tests/run.lua                    # 118 tests across both scripts and the manager
+lua tests/run.lua                    # 121 tests across both scripts and the manager
 lua tests/preview.lua stock 121 18   # render a view in your terminal, in colour
 lua tests/preview.lua movers|vaults|detail [width] [height]
 lua tests/preview.lua departures|arrivals|platform|summary|onboard|route|concourse
