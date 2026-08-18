@@ -1,5 +1,5 @@
 --[[
-  rail  --  UK style train information displays for CC: Tweaked        v0.2.0
+  rail  --  UK style train information displays for CC: Tweaked        v0.3.0
 
   Part of the cc-vaults package; install it with `vaults install rail`.
 
@@ -19,6 +19,7 @@
     rail flap               push the next departure onto Create displays
     rail hub                headless: read the stations, serve them by rednet
     rail stations           list what this computer can see, and why
+    rail link               check the modems and listen for hubs
     rail setup              write a starter rail.cfg you can edit
     rail help               this list
 
@@ -30,7 +31,7 @@
     right-click each modem until it says "peripheral attached", then a monitor
 ]]
 
-local VERSION = "0.2.0"
+local VERSION = "0.3.0"
 local CONFIG  = "rail.cfg"
 
 --------------------------------------------------------------------- config
@@ -809,15 +810,34 @@ end
 -- A hub reads the stations and shouts what it sees; displays that cannot see
 -- a station of their own listen in.  Everything works without this, it just
 -- saves running networking cable to the far end of the layout.
-local link = { open = false }
+local link = { open = false, modems = 0 }
 
+local function modemNames()
+  local found = {}
+  for _, name in ipairs(peripheral.getNames()) do
+    for _, kind in ipairs({ peripheral.getType(name) }) do
+      if kind == "modem" then
+        found[#found + 1] = name
+        break
+      end
+    end
+  end
+  table.sort(found)
+  return found
+end
+
+-- Open every modem, not just the first one: a hub usually has a wired modem
+-- for the stations *and* an ender modem for the boards, and rednet on the
+-- wrong one of those talks to nobody.
 function link.start()
-  if not rednet then return false end
-  local modem = peripheral.find("modem")
-  if not modem then return false end
-  local ok = pcall(rednet.open, peripheral.getName(modem))
-  link.open = ok and true or false
-  return link.open
+  if not rednet then return 0 end
+  local opened = 0
+  for _, name in ipairs(modemNames()) do
+    if pcall(rednet.open, name) then opened = opened + 1 end
+  end
+  link.modems = opened
+  link.open = opened > 0
+  return opened
 end
 
 function link.publish()
@@ -833,7 +853,9 @@ end
 function link.accept(message)
   if type(message) ~= "table" then return false end
   if message.station and message.station ~= config.station then return false end
-  if type(message.services) == "table" and #message.services > 0 then
+  -- a hub that is talking to us is the authority, even when it has nothing to
+  -- report; showing the demo timetable instead would just be a lie
+  if type(message.services) == "table" then
     state.services = message.services
     state.source = "hub"
     local arrivals = {}
@@ -1416,14 +1438,60 @@ mode = ALIASES[mode] or mode
 if mode == "help" or mode == "-h" or mode == "--help" then
   print("rail " .. VERSION .. " -- train information displays")
   print("modes: departures arrivals platform summary onboard route")
-  print("       concourse flap hub setup stations help")
-  print("run `rail stations` to see what is wired up,")
-  print("then `rail setup` to write rail.cfg, then `rail <mode>`")
+  print("       concourse flap hub setup stations link help")
+  print("`rail stations` shows what is wired up, `rail link` what")
+  print("is on the radio; `rail setup` writes rail.cfg")
   return
 end
 
 if mode == "setup" then
   writeTemplate(args[2] == "-f" or args[2] == "--force")
+  return
+end
+
+-- Is the wireless working?  There is nothing to pair: every computer with a
+-- modem open on the "rail" protocol hears every hub, and a display keeps the
+-- broadcasts whose station name matches its own.  So the only questions are
+-- whether a modem is attached and whether the two names agree.
+if mode == "link" then
+  local names = modemNames()
+  if #names == 0 then
+    printError("no modem attached to this computer")
+    print("place an ender modem against the computer, then run this again")
+    return
+  end
+  for _, name in ipairs(names) do
+    local ok, wireless = pcall(peripheral.call, name, "isWireless")
+    print(name .. ((ok and wireless) and "  wireless" or "  wired"))
+  end
+  print("rednet open on " .. link.start() .. " modem(s)")
+  print("this display answers to: " .. config.station)
+  print("")
+  print("listening for hubs, press a key to stop")
+
+  local heard, deaf = 0, os.startTimer(15)
+  while true do
+    local event = { os.pullEvent() }
+    if event[1] == "key" then break end
+    if event[1] == "timer" and event[2] == deaf then break end
+    if event[1] == "rednet_message" and event[4] == "rail" then
+      local message = event[3]
+      heard = heard + 1
+      local from = type(message) == "table" and tostring(message.station) or "?"
+      local count = 0
+      if type(message) == "table" and type(message.services) == "table" then
+        count = #message.services
+      end
+      print("computer " .. tostring(event[2]) .. ": " .. from ..
+            ", " .. count .. " services")
+      if from ~= config.station then
+        printError("  ignored: this display wants " .. config.station)
+      end
+    end
+  end
+  if heard == 0 then
+    print("nothing heard - is a computer running `rail hub` in range?")
+  end
   return
 end
 

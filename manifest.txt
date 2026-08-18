@@ -5,4 +5,4 @@
 
 vaults | vaults.lua        | 2.0.0 | Installer and launcher for these scripts
 stock  | scripts/stock.lua | 1.2.0 | Live Create vault stock dashboard
-rail   | scripts/rail.lua  | 0.2.0 | UK style train information displays
+rail   | scripts/rail.lua  | 0.3.0 | UK style train information displays

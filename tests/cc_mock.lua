@@ -247,7 +247,8 @@ end
 --   stations = { ["create:track_station_0"] = { name=, present=, train=,
 --                                               imminent=, enroute=, schedule= } }
 --   sources  = { ["create_source_0"] = { width = 24, height = 3 } }
---   modem    = "modem_0"                            -- makes rednet work
+--   modem    = "modem_0" or { "modem_0", "ender_modem_1" }   -- rednet on;
+--              a name mentioning ender or wireless is a wireless modem
 --   time     = 15.5                                 -- os.time(), in hours
 --   width/height/color, events, files, urls
 function mock.newEnv(opts)
@@ -291,7 +292,17 @@ function mock.newEnv(opts)
     return table.concat(source.lines, "\n")
   end
 
-  local modemName = opts.modem
+  -- one modem name, or several; a name mentioning ender or wireless reports
+  -- itself as a wireless modem
+  local modems = {}
+  if type(opts.modem) == "string" then
+    modems[opts.modem] = true
+  elseif type(opts.modem) == "table" then
+    for _, name in ipairs(opts.modem) do modems[name] = true end
+  end
+  local function isWireless(name)
+    return name:find("ender", 1, true) ~= nil or name:find("wireless", 1, true) ~= nil
+  end
   local monitorName = opts.monitorName
   if monitorName == nil then monitorName = "monitor_0" end
 
@@ -301,7 +312,7 @@ function mock.newEnv(opts)
     for name in pairs(stations) do names[#names + 1] = name end
     for name in pairs(sources) do names[#names + 1] = name end
     for name in pairs(opts.extras or {}) do names[#names + 1] = name end
-    if modemName then names[#names + 1] = modemName end
+    for name in pairs(modems) do names[#names + 1] = name end
     if monitorName then names[#names + 1] = monitorName end
     table.sort(names)
     return names
@@ -311,7 +322,7 @@ function mock.newEnv(opts)
     if vaults[name] then return "create:item_vault", "inventory" end
     if stations[name] then return "Create_Station" end
     if sources[name] then return "create_source" end
-    if name == modemName then return "modem" end
+    if modems[name] then return "modem" end
     if name == monitorName then return "monitor" end
     local extra = (opts.extras or {})[name]
     if extra then return extra end
@@ -393,8 +404,8 @@ function mock.newEnv(opts)
         getLine = function(y) return source.lines[y] or "" end,
       }
     end
-    if name == modemName then
-      return { isWireless = function() return false end }
+    if modems[name] then
+      return { isWireless = function() return isWireless(name) end }
     end
     if name == monitorName then return monitorApi end
     return nil

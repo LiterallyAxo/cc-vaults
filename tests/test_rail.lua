@@ -398,6 +398,63 @@ describe("rail: Create displays and rednet", function()
     eq(env.rednetSent[1].message.station, "Create Central")
   end)
 
+  it("opens every modem, not just the first one it finds", function()
+    local env = newEnv({
+      modem = { "modem_0", "ender_modem_1" },
+      files = cfg(TIMETABLE),
+      events = { { "timer", 1 } },
+    })
+    H.runOk(env, SCRIPT, "hub")
+    eq(env.internals.link.modems, 2, "a hub needs the cable and the radio")
+    eq(#env.rednetSent, 1)
+  end)
+
+  it("checks the radio and reports what it hears", function()
+    local env = newEnv({
+      modem = { "modem_0", "ender_modem_1" },
+      events = {
+        { "rednet_message", 12, {
+          station = "Create Central", services = { {} },
+        }, "rail" },
+        { "rednet_message", 13, {
+          station = "Somewhere Else", services = {},
+        }, "rail" },
+        { "timer", 1 },
+      },
+    })
+    H.runOk(env, SCRIPT, "link")
+    local printed = env.printed()
+    H.contains(printed, "ender_modem_1  wireless")
+    H.contains(printed, "modem_0  wired")
+    H.contains(printed, "rednet open on 2 modem(s)")
+    H.contains(printed, "computer 12: Create Central")
+    H.contains(printed, "ignored: this display wants Create Central")
+  end)
+
+  it("says so when there is no modem to check", function()
+    local env = newEnv()
+    H.runOk(env, SCRIPT, "link")
+    H.contains(env.printed(), "no modem attached")
+  end)
+
+  it("says so when the radio is quiet", function()
+    local env = newEnv({ modem = "ender_modem_0", events = { { "timer", 1 } } })
+    H.runOk(env, SCRIPT, "link")
+    H.contains(env.printed(), "nothing heard")
+  end)
+
+  it("believes a hub that reports nothing over its own demo timetable", function()
+    local env = newEnv({
+      modem = "ender_modem_0",
+      events = { { "rednet_message", 7, {
+        station = "Create Central", services = {},
+      }, "rail" } },
+    })
+    H.runOk(env, SCRIPT)
+    eq(env.internals.state.source, "hub")
+    H.screenHas(env.frame, "no departures")
+  end)
+
   it("takes a hub broadcast in place of its own scan", function()
     local env = newEnv({
       modem = "modem_0",

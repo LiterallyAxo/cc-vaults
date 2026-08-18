@@ -165,6 +165,7 @@ rail concourse        station clock over the next departures
 rail flap             push the next departure onto Create displays
 rail hub              headless: read the stations, serve them by rednet
 rail stations         list what this computer can see, and why
+rail link             check the modems and listen for hubs
 rail setup            write a starter rail.cfg you can edit
 ```
 
@@ -205,6 +206,7 @@ No stations listed means a wired modem is not switched on. `[not ours]` means
 | `flap` | not a monitor at all: writes the next departure onto Create flap displays, nixie tubes or a sign through CC:C Bridge | — |
 | `hub` | no display; reads every station on its network and broadcasts what it sees to the other computers | — |
 | `stations` | no display; prints every Train Station this computer can see, what stops there and whether it counts as ours | — |
+| `link` | no display; lists the modems, opens rednet and prints every hub broadcast it hears for fifteen seconds | — |
 
 Every mode re-flows to whatever size it finds, and drops columns rather than
 overflowing: the platform column goes below 46 characters wide, the expected
@@ -301,6 +303,47 @@ In order of preference:
    that have no station of their own.
 4. **A demonstration timetable**, so a fresh computer still shows you a board.
 
+## Going wireless
+
+Networking cable to a station on the far side of the map is no fun. Put a
+computer at the station instead, and let it read the stations locally and shout
+what it sees:
+
+```
+station end                              board end
+  computer  ── wired modem ── stations     computer ── monitor
+      └── ender modem                          └── ender modem
+  rail hub                                 rail departures
+```
+
+Nothing is paired, addressed or channelled. Every `rail` computer opens **all**
+of its modems on the rednet protocol `rail`; a hub broadcasts what it can see
+every `refresh` seconds; a display keeps the broadcasts whose `station` matches
+the `station` in its own `rail.cfg` and ignores the rest. So the only thing
+that has to line up is that one string, and two stations with different names
+happily share the air.
+
+A hub usually has two modems — a wired one for the Train Stations and an ender
+one for the boards — which is why `rail` opens every modem it finds rather than
+the first one.
+
+`rail link` is the check: it lists the modems with which of them are wireless,
+opens rednet, and prints every hub broadcast that arrives, flagging any whose
+station name does not match this display.
+
+```
+ender_modem_1  wireless
+modem_0  wired
+rednet open on 2 modem(s)
+this display answers to: Create Central
+
+listening for hubs, press a key to stop
+computer 12: Create Central, 6 services
+```
+
+Ender modems have unlimited range and work between dimensions. Plain Wireless
+Modems work too, but only out to a few hundred blocks, and less underground.
+
 ## Onboard displays
 
 Blocks on a moving Create contraption are not ticked, so a computer bolted
@@ -324,7 +367,7 @@ previewed without launching Minecraft. You need a normal Lua 5.4 interpreter
 (`winget install DEVCOM.Lua`).
 
 ```
-lua tests/run.lua                    # 121 tests across both scripts and the manager
+lua tests/run.lua                    # 126 tests across both scripts and the manager
 lua tests/preview.lua stock 121 18   # render a view in your terminal, in colour
 lua tests/preview.lua movers|vaults|detail [width] [height]
 lua tests/preview.lua departures|arrivals|platform|summary|onboard|route|concourse
