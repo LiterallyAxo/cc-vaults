@@ -15,6 +15,7 @@ vaults.lua          package manager; installed on the computer as vaults.lua
 manifest.txt        name | file | version | description, one line per script
 scripts/stock.lua   Create vault dashboard; installed as stock.lua, run as `stock`
 scripts/rail.lua    UK style train boards for Create trains; run as `rail [mode]`
+RAIL-SETUP.md       player facing setup walkthrough for rail (README is reference)
 docs/               offline CC: Tweaked and CC:C Bridge docs (see docs/README.md)
 tests/              CC emulator, test suites, terminal preview tool
 tools/fetch_docs.py refreshes docs/

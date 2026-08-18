@@ -139,6 +139,10 @@ Boards for a Create railway, in the style of the ones on the British network.
 One script, several modes; you pick the mode that suits the screen you have
 just built.
 
+**New to it? [RAIL-SETUP.md](RAIL-SETUP.md) is the whole thing from nothing**,
+in order, with the blocks to place and what to type. What follows here is the
+reference.
+
 ```
  >>      CREATE CENTRAL            Departures                             15:26
  Time  Destination                                             Plat  Expected
@@ -386,6 +390,7 @@ vaults.lua          the package manager (installed as vaults.lua)
 manifest.txt        name | file | version | description, one script per line
 scripts/stock.lua   the dashboard (installed as stock.lua)
 scripts/rail.lua    the train displays (installed as rail.lua)
+RAIL-SETUP.md       step by step guide to setting the train displays up
 tests/              CC emulator, test suites, terminal preview tool
 docs/               offline CC: Tweaked + CC:C Bridge reference (docs/README.md)
 tools/fetch_docs.py refreshes docs/ from the upstream sites

@@ -1,5 +1,5 @@
 --[[
-  rail  --  UK style train information displays for CC: Tweaked        v0.3.0
+  rail  --  UK style train information displays for CC: Tweaked        v0.3.1
 
   Part of the cc-vaults package; install it with `vaults install rail`.
 
@@ -31,7 +31,7 @@
     right-click each modem until it says "peripheral attached", then a monitor
 ]]
 
-local VERSION = "0.3.0"
+local VERSION = "0.3.1"
 local CONFIG  = "rail.cfg"
 
 --------------------------------------------------------------------- config
@@ -1430,8 +1430,8 @@ local ALIASES = {
   plat = "platform", next = "summary", matrix = "summary",
   pis = "onboard", train = "onboard", carriage = "onboard",
   diagram = "route", line = "route",
-  clock = "concourse", station = "concourse",
-  display = "flap", create = "flap",
+  clock = "concourse",          -- not "station": that is one letter from
+  display = "flap", create = "flap",   -- `rail stations`, which does something else
 }
 mode = ALIASES[mode] or mode
 
