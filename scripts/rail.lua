@@ -34,6 +34,7 @@ local CONFIG  = "rail.cfg"
 
 --------------------------------------------------------------------- config
 local config = {
+  mode      = nil,              -- what to show when `rail` is run with no mode
   station   = "Create Central", -- the station this display belongs to
   code      = "CRC",            -- three letter code, as on the real thing
   operator  = "Create Rail",    -- train operator, named on onboard displays
@@ -1320,6 +1321,9 @@ local TEMPLATE = [==[
 -- rail.cfg -- edit to taste, then restart the display.
 -- Anything you leave out keeps its default.
 return {
+  mode     = nil,         -- the mode to show when `rail` is run with no
+                          -- arguments, so the board comes back after a reboot:
+                          -- "departures", "platform", "onboard", ...
   station  = "Birmingham New Street",  -- what this station is called
   code     = "BHM",
   operator = "Create Rail",
@@ -1393,7 +1397,9 @@ end
 
 --------------------------------------------------------------------- main
 local args = { ... }
-local mode = (args[1] or "departures"):lower()
+-- a board that boots straight into its mode needs it in the config, because
+-- `vaults startup rail on` cannot pass arguments
+local mode = tostring(args[1] or config.mode or "departures"):lower()
 
 local ALIASES = {
   dep = "departures", departure = "departures", board = "departures",

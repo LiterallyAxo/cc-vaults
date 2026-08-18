@@ -222,6 +222,7 @@ leave out keeps its default.
 
 | Option | Default | What it does |
 | --- | --- | --- |
+| `mode` | `nil` | what to show when `rail` is run with no argument, so a board comes back by itself after a reboot |
 | `station` | `"Create Central"` | the station this display belongs to; also picks which Train Stations count as ours |
 | `code` | `"CRC"` | three letter station code |
 | `operator` | `"Create Rail"` | named on the onboard displays |
@@ -298,7 +299,7 @@ previewed without launching Minecraft. You need a normal Lua 5.4 interpreter
 (`winget install DEVCOM.Lua`).
 
 ```
-lua tests/run.lua                    # 116 tests across both scripts and the manager
+lua tests/run.lua                    # 118 tests across both scripts and the manager
 lua tests/preview.lua stock 121 18   # render a view in your terminal, in colour
 lua tests/preview.lua movers|vaults|detail [width] [height]
 lua tests/preview.lua departures|arrivals|platform|summary|onboard|route|concourse

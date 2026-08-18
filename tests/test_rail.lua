@@ -496,6 +496,18 @@ describe("rail: odds and ends", function()
     H.contains(env.printed(), "concourse")
   end)
 
+  it("boots into the mode named in the config", function()
+    local env = newEnv({ files = cfg('  mode = "concourse",') })
+    H.runOk(env, SCRIPT)
+    H.screenHas(env.frame, "Welcome to Create Central")
+  end)
+
+  it("lets an argument beat the mode in the config", function()
+    local env = newEnv({ files = cfg('  mode = "concourse",') })
+    H.runOk(env, SCRIPT, "arrivals")
+    H.screenHas(env.frame, "Arrivals")
+  end)
+
   it("accepts the short names for the modes", function()
     local env = newEnv({ files = cfg(TIMETABLE) })
     H.runOk(env, SCRIPT, "arr")
