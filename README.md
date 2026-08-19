@@ -244,7 +244,8 @@ computer ── modem ────┼── modem ── Train Station (platform
 Right-click every modem until it turns red and says *"Peripheral … attached"* —
 an un-activated modem means the computer cannot see that station. Name each
 Train Station in game with its platform in the name (`Create Central Platform
-3`) and `rail` works the platform numbers out for itself; otherwise map them in
+3`) and `rail` works the platform numbers out for itself. **A station with no
+platform in its name is platform 1**; otherwise map them in
 `rail.cfg`.
 
 ## rail.cfg

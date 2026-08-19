@@ -1,5 +1,5 @@
 --[[
-  rail  --  UK style train information displays for CC: Tweaked        v0.5.0
+  rail  --  UK style train information displays for CC: Tweaked        v0.6.0
 
   Part of the cc-vaults package; install it with `vaults install rail`.
 
@@ -32,7 +32,7 @@
     right-click each modem until it says "peripheral attached", then a monitor
 ]]
 
-local VERSION = "0.5.0"
+local VERSION = "0.6.0"
 local CONFIG  = "rail.cfg"
 
 --------------------------------------------------------------------- config
@@ -444,6 +444,8 @@ local state = {
   known    = {},   -- platform -> the last calling pattern seen there
   sightings = {},  -- train name -> where it is, and when it left the last stop
   legs     = {},   -- "from\0to" -> how long that hop has taken, averaged
+  patterns = {},   -- train name -> the whole schedule, however we came by it
+  peers    = {},   -- computer id -> the other rail computers on the radio
   source   = "demo",
   tick     = 0,
   lastScan = 0,
@@ -487,6 +489,7 @@ local function rememberKnown()
   if not handle then return end
   handle.write("return " .. serialise({
     known = state.known, legs = state.legs, sightings = state.sightings,
+    patterns = state.patterns,
   }, ""))
   handle.close()
   state.dirty = false
@@ -505,6 +508,7 @@ local function recallKnown()
   state.known     = result.known or {}
   state.legs      = result.legs or {}
   state.sightings = result.sightings or {}
+  state.patterns  = result.patterns or {}
 end
 
 --------------------------------------------------------------------- live
@@ -537,7 +541,12 @@ local function stopMatches(filter, name)
   if filter == name then return true end
   local pattern = "^" .. filter:gsub("[%^%$%(%)%%%.%[%]%+%-%?]", "%%%0")
                               :gsub("%*", ".*") .. "$"
-  return name:match(pattern) ~= nil
+  if name:match(pattern) then return true end
+  -- "Kings Cross *" is written to catch every platform at Kings Cross, and a
+  -- station called just "Kings Cross" is one of them; without this a station
+  -- whose name has no platform number on it matches nothing at all
+  local bare = filter:match("^(.-)%s*%*+$")
+  return bare ~= nil and bare ~= "" and bare == name
 end
 
 local function cleanStop(text)
@@ -550,8 +559,10 @@ local function platformOf(station)
   if given then return tostring(given) end
   local fromName = tostring(station.name):match("[Pp]latform%s*(%w+)")
   if fromName then return fromName end
-  local fromPeripheral = tostring(station.peripheral):match("(%d+)$")
-  return fromPeripheral or "-"
+  -- A station with no platform in its name is platform 1.  The trailing number
+  -- on the peripheral used to be used here, but Create hands those out in
+  -- world-load order, so it put a meaningless number on the board.
+  return "1"
 end
 
 local function ownStation(station)
@@ -721,37 +732,86 @@ local function liveServices(now)
   end
   if #mine == 0 then mine = stations end
 
+  -- Every schedule we can read is the whole loop, and it names every station
+  -- the train works through -- including ours.  So one train standing at the
+  -- far end of the line is enough to say what calls at every platform here,
+  -- rather than only the platform it happens to be sitting at.  Without this a
+  -- layout with a single train shows exactly one row, and that row hops from
+  -- platform to platform as the train moves.
+  local schedules = {}
+  for _, station in ipairs(stations) do
+    if station.present and station.schedule then
+      local stops = scheduleStops(station.schedule)
+      if #stops > 0 then
+        schedules[#schedules + 1] = { stops = stops, train = station.train }
+        -- keep it, and pass it on: one schedule per train, so this cannot grow
+        -- without bound however long the network runs
+        if station.train then
+          state.patterns[station.train] = { stops = stops, train = station.train, at = now }
+          state.dirty = true
+        end
+      end
+    end
+  end
+  for _, shared in pairs(state.patterns) do
+    if type(shared.stops) == "table" and #shared.stops > 0 then
+      schedules[#schedules + 1] = shared
+    end
+  end
+
+  -- the train standing here knows best; failing that, any schedule that names
+  -- this station will do, including one another computer told us about
+  local function scheduleFor(station)
+    if station.present and station.schedule then
+      local stops = scheduleStops(station.schedule)
+      if #stops > 0 then return stops, station.train end
+    end
+    for _, sched in ipairs(schedules) do
+      for _, stop in ipairs(sched.stops) do
+        if stopMatches(stop, station.name) then return sched.stops, sched.train end
+      end
+    end
+    return nil
+  end
+
   local services = {}
   for _, station in ipairs(mine) do
-    local key = station.platform
-    if station.present then
-      local stops = scheduleStops(station.schedule)
+    -- keyed by the station block, not the platform: two stations that both
+    -- come out as "platform 1" are still two different platforms
+    local key = station.peripheral
+    local stops, schedTrain = scheduleFor(station)
+
+    if stops then
       local calls = onwardCalls(stops, station.name)
       if #calls > 0 then
-        local was = state.known[key]
+        local was = state.known[key] or {}
         local entry = {
-          calls  = calls,
-          dest   = calls[#calls],
-          origin = previousCall(stops, station.name),
-          seen   = now,
-          train  = station.train,
+          calls    = calls,
+          dest     = calls[#calls],
+          origin   = previousCall(stops, station.name),
+          platform = station.platform,
+          station  = station.name,
+          seen     = was.seen,
+          arrived  = was.arrived,
+          every    = was.every,
+          train    = was.train or schedTrain,
         }
-        -- How often this platform actually turns round, measured rather than
-        -- assumed: Create gives no arrival estimate, so the only honest way to
-        -- say when the next one is due is to time the last one.
-        entry.arrived = now
-        if was then
-          entry.every = was.every
-          -- the same train still standing here arrived when it arrived; only a
-          -- new one restarts the clock, or the booked time creeps forward for
-          -- as long as it sits at the platform
-          if was.train == station.train then entry.arrived = was.arrived or now end
-          if was.train ~= station.train and was.seen then
-            local gap = (now - was.seen) % 1440
-            if gap > 0 and gap < 720 then
-              entry.every = was.every and (was.every + gap) / 2 or gap
+        -- Only a train actually standing here moves the timings on; a pattern
+        -- learned from somebody else's schedule says what calls, not when.
+        if station.present then
+          if was.train ~= station.train then
+            entry.arrived = now
+            if was.seen then
+              local gap = (now - was.seen) % 1440
+              if gap > 0 and gap < 720 then
+                entry.every = was.every and (was.every + gap) / 2 or gap
+              end
             end
+          else
+            entry.arrived = was.arrived or now
           end
+          entry.seen  = now
+          entry.train = station.train
         end
         state.known[key] = entry
         state.dirty = true
@@ -765,7 +825,7 @@ local function liveServices(now)
       -- Keep the platform on the board after the train has gone.  Dropping it
       -- the moment `isTrainPresent` goes false is what used to leave the board
       -- with nothing to show, and nothing is where the demo timetable crept in.
-      if here or since <= (config.memory or 30) then
+      if here or not known.seen or since <= (config.memory or 30) then
         -- Absolute times, not "now + something".  Recomputing the offset on
         -- every scan is what made the departure time tick forward with the
         -- clock instead of settling on one and staying there.
@@ -784,16 +844,19 @@ local function liveServices(now)
             arrive = now + math.min(minutesFor(config.dwell), minutesFor(config.legRun))
           elseif station.enroute then
             arrive = now + minutesFor(config.legRun)
-          else
+          elseif known.seen then
             -- nothing in sight: due back one measured round trip after the last
-            arrive = (known.seen or now) + (known.every or minutesFor(config.legRun))
+            arrive = known.seen + (known.every or minutesFor(config.legRun))
             timed = known.every ~= nil
             if arrive < now then arrive = now end
+          else
+            -- we know what calls here but have never watched one do it
+            arrive = now + minutesFor(config.legRun)
           end
           due = arrive + minutesFor(config.dwell)
         end
         services[#services + 1] = {
-          platform = key,
+          platform = known.platform or station.platform,
           dest     = known.dest,
           calls    = known.calls,
           origin   = known.origin,
@@ -1038,20 +1101,44 @@ function link.start()
   return opened
 end
 
-function link.publish()
+-- Every computer with a modem open joins the mesh, not just hubs: slap an
+-- ender modem on a board and it starts pooling what it knows with everybody
+-- else.  Only a hub claims to be the authority on a station's departures
+-- though, so `services` is the one field a display never broadcasts.
+function link.publish(withServices)
   if not link.open then return end
   pcall(rednet.broadcast, {
     station   = config.station,
-    services  = state.services,
-    trains    = state.trains,
+    services  = withServices and state.services or nil,
+    trains    = withServices and state.trains or nil,
     sightings = state.sightings,
     legs      = state.legs,
+    patterns  = state.patterns,
     at        = nowMinutes(),
   }, "rail")
 end
 
-function link.accept(message, sightingsOnly)
+function link.accept(message, sightingsOnly, from)
   if type(message) ~= "table" then return false end
+
+  if from then
+    state.peers[from] = { station = message.station, at = nowMinutes() }
+  end
+
+  -- Schedules travel best of all.  A schedule is the whole loop, so a station
+  -- that has never had a train stand at it can still work out its own calling
+  -- points from one another computer read at the other end of the line.
+  if type(message.patterns) == "table" then
+    for train, pattern in pairs(message.patterns) do
+      if type(pattern) == "table" and type(pattern.stops) == "table" then
+        local mine = state.patterns[train]
+        if not mine or (pattern.at or 0) > (mine.at or 0) then
+          state.patterns[train] = pattern
+          state.dirty = true
+        end
+      end
+    end
+  end
 
   -- Sightings and leg times are worth having whoever sent them.  A board only
   -- ever watches its own platforms, so the only way it can know how long the
@@ -1713,6 +1800,8 @@ if mode == "link" then
   end
   print("rednet open on " .. link.start() .. " modem(s)")
   print("this display answers to: " .. config.station)
+  print("every rail computer on the radio pools schedules and")
+  print("hop times; no pairing and nothing to configure")
   print("")
   print("listening for hubs, press a key to stop")
 
@@ -1725,19 +1814,32 @@ if mode == "link" then
       local message = event[3]
       heard = heard + 1
       local from = type(message) == "table" and tostring(message.station) or "?"
-      local count = 0
-      if type(message) == "table" and type(message.services) == "table" then
-        count = #message.services
+      local shared = {}
+      if type(message) == "table" then
+        local function count(field)
+          local n = 0
+          for _ in pairs(type(message[field]) == "table" and message[field] or {}) do
+            n = n + 1
+          end
+          return n
+        end
+        if message.services then shared[#shared + 1] = #message.services .. " services" end
+        if count("patterns") > 0 then shared[#shared + 1] = count("patterns") .. " schedules" end
+        if count("legs") > 0 then shared[#shared + 1] = count("legs") .. " hop times" end
+        if count("sightings") > 0 then shared[#shared + 1] = count("sightings") .. " sightings" end
       end
-      print("computer " .. tostring(event[2]) .. ": " .. from ..
-            ", " .. count .. " services")
-      if from ~= config.station then
-        printError("  ignored: this display wants " .. config.station)
+      print("computer " .. tostring(event[2]) .. ": " .. from)
+      print("  " .. (#shared > 0 and table.concat(shared, ", ") or "nothing yet"))
+      -- schedules and timings are pooled whoever sent them; only the departure
+      -- list itself has to be for this station
+      if from ~= config.station and message.services then
+        print("  its departures are not ours, but the rest is worth having")
       end
     end
   end
   if heard == 0 then
-    print("nothing heard - is a computer running `rail hub` in range?")
+    print("nothing heard - is another rail computer running in range,")
+    print("and does it have a modem too?")
   end
   return
 end
@@ -1912,8 +2014,9 @@ local ok, err = pcall(function()
         if state.source ~= "hub" or quiet > minutesFor(config.refresh * 3) then
           refresh()
         end
+        link.publish(mode == "hub")
         if mode == "hub" then
-          link.publish()
+          -- nothing to draw
         elseif mode == "flap" then
           pushFlaps()
         else
@@ -1929,7 +2032,7 @@ local ok, err = pcall(function()
     elseif name == "rednet_message" then
       -- hubs take the sightings too: that is how a station learns the timings
       -- of hops it cannot watch for itself
-      if event[4] == "rail" and link.accept(event[3], mode == "hub") then
+      if event[4] == "rail" and link.accept(event[3], mode == "hub", event[2]) then
         if mode == "hub" then
           -- nothing to redraw, but the ledger has moved on
         elseif mode == "flap" then pushFlaps() else draw() end

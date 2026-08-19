@@ -97,8 +97,13 @@ Full docs are in `docs/` — grep there before guessing. The ones that bite:
   imminent / enroute flags and the train name. `rail` therefore *times* the
   railway: it records when a train leaves one station and reaches the next,
   averages that over a few trips (`state.legs`, kept in `rail.dat`) and
-  predicts from the measurement. Hubs gossip sightings over rednet so a
-  computer can use hops it cannot watch itself.
+  predicts from the measurement. Every computer with a modem gossips
+  sightings, hop times and whole schedules over rednet, so one can use hops
+  and calling patterns it could never observe alone; only `rail hub` also
+  broadcasts `services`, which is the one station-addressed field.
+- A Create station block with no "Platform N" in its name is platform 1. The
+  trailing number on the peripheral name is Create's load order, not a
+  platform, so it must never reach the board.
 - The in-game clock runs 72x, so one real second is 1.2 in-game minutes.
   Anything the player can time with a stopwatch (`dwell`, `legRun`) is
   configured in real seconds and converted with `minutesFor`.

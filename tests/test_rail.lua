@@ -181,6 +181,8 @@ describe("rail: reading Create stations", function()
     H.runOk(env, SCRIPT)
     local matches = env.internals.stopMatches
     H.truthy(matches("Create Central *", "Create Central Platform 3"))
+    H.truthy(matches("Create Central *", "Create Central"),
+             "a wildcard for every platform covers the bare station too")
     H.truthy(matches("Rugby", "Rugby"))
     H.falsy(matches("Rugby", "Rugby Parkway"))
   end)
@@ -198,14 +200,40 @@ describe("rail: reading Create stations", function()
     H.runOk(env, SCRIPT)
     local platformOf = env.internals.platformOf
     eq(platformOf({ name = "New Street Platform 12", peripheral = "x" }), "12")
-    eq(platformOf({ name = "Somewhere", peripheral = "create:track_station_4" }), "4")
+    -- no platform in the name is platform 1; the number on the end of the
+    -- peripheral is Create's load order and means nothing to a passenger
+    eq(platformOf({ name = "Somewhere", peripheral = "create:track_station_4" }), "1")
   end)
 
-  it("only advertises a platform once it knows what stops there", function()
+  it("fills in every platform from one schedule read anywhere", function()
     local env = stationEnv()
     H.runOk(env, SCRIPT)
-    -- platform 5 has a train on the way but has never shown us a schedule
-    eq(#env.internals.state.services, 1)
+    -- platform 5 has never had a train stand at it, but the schedule read at
+    -- platform 3 names this station, so we know what calls at 5 as well
+    eq(#env.internals.state.services, 2)
+    local platforms = {}
+    for _, service in ipairs(env.internals.state.services) do
+      platforms[service.platform] = service.dest
+    end
+    eq(platforms["3"], "London Euston")
+    eq(platforms["5"], "London Euston")
+  end)
+
+  it("keeps two platforms apart even when both are platform 1", function()
+    local env = newEnv({
+      stations = {
+        ["create:track_station_0"] = {
+          name = "Create Central North", present = true,
+          train = "1A23", schedule = eustonSchedule(),
+        },
+        ["create:track_station_1"] = { name = "Create Central South", enroute = true },
+      },
+    })
+    H.runOk(env, SCRIPT)
+    -- both come out as platform 1, but they are two different station blocks
+    eq(#env.internals.state.services, 2)
+    H.truthy(env.internals.state.known["create:track_station_0"])
+    H.truthy(env.internals.state.known["create:track_station_1"])
   end)
 
   it("remembers what a platform serves once a train has stood there", function()
@@ -268,7 +296,7 @@ describe("rail: reading Create stations", function()
       },
     })
     H.runOk(second, SCRIPT)
-    eq(second.internals.state.known["3"].dest, "London Euston")
+    eq(second.internals.state.known["create:track_station_0"].dest, "London Euston")
     H.contains(second.printed(), "remembered")
   end)
 
@@ -290,7 +318,8 @@ describe("rail: reading Create stations", function()
       end },
     })
     H.runOk(env, SCRIPT)
-    eq(env.internals.state.known["3"].every, 30, "30 in-game minutes between trains")
+    eq(env.internals.state.known["create:track_station_0"].every, 30,
+       "30 in-game minutes between trains")
   end)
 
   it("times a hop by watching a train leave one station and reach the next", function()
@@ -332,8 +361,9 @@ describe("rail: reading Create stations", function()
         },
       },
       files = { ["rail.dat"] = [[return {
-        known = { ["3"] = { dest = "London Euston", origin = "Coventry",
-                            seen = 890, train = "1A23", calls = { "London Euston" } } },
+        known = { ["create:track_station_0"] = {
+                    dest = "London Euston", origin = "Coventry", platform = "3",
+                    seen = 890, train = "1A23", calls = { "London Euston" } } },
         legs  = { ["Coventry\0Create Central Platform 3"] = { mins = 12, n = 4 } },
         sightings = { ["1A23"] = { at = "Coventry", t = 894, standing = false,
                                    leftAt = 894 } },
@@ -605,6 +635,7 @@ describe("rail: Create displays and rednet", function()
         }, "rail" },
         { "rednet_message", 13, {
           station = "Somewhere Else", services = {},
+          legs = { ["A B"] = { mins = 9, n = 2 } },
         }, "rail" },
         { "timer", 1 },
       },
@@ -615,7 +646,63 @@ describe("rail: Create displays and rednet", function()
     H.contains(printed, "modem_0  wired")
     H.contains(printed, "rednet open on 2 modem(s)")
     H.contains(printed, "computer 12: Create Central")
-    H.contains(printed, "ignored: this display wants Create Central")
+    H.contains(printed, "1 services")
+    H.contains(printed, "computer 13: Somewhere Else")
+    H.contains(printed, "1 hop times")
+    H.contains(printed, "its departures are not ours")
+  end)
+
+  it("works out its own departures from a schedule another computer shared", function()
+    local env = newEnv({
+      modem = "ender_modem_0",
+      -- this station has never had a train stand at it, so on its own it has
+      -- nothing to say; the schedule arrives over the radio
+      stations = {
+        ["create:track_station_0"] = { name = "Create Central Platform 2" },
+      },
+      events = { { "rednet_message", 9, {
+        station = "Somewhere Else",
+        patterns = { ["1A23"] = { train = "1A23", at = 900, stops = {
+          "Create Central *", "Coventry", "Rugby", "London Euston",
+        } } },
+      }, "rail" }, function(inner)
+        inner.pushNext({ "key", inner.keys.r })   -- rescan with what arrived
+      end },
+    })
+    H.runOk(env, SCRIPT)
+    local service = env.internals.state.services[1]
+    H.truthy(service, "no departure was worked out from the shared schedule")
+    eq(service.dest, "London Euston")
+    eq(service.platform, "2")
+    H.screenHas(env.frame, "London Euston")
+  end)
+
+  it("gossips schedules and timings from every mode, not just a hub", function()
+    local env = newEnv({
+      modem = "ender_modem_0",
+      stations = {
+        ["create:track_station_0"] = {
+          name = "Create Central Platform 3", present = true,
+          train = "1A23", schedule = eustonSchedule(),
+        },
+      },
+      events = { { "timer", 1 } },
+    })
+    H.runOk(env, SCRIPT)               -- a plain departures board, not a hub
+    eq(#env.rednetSent, 1)
+    local sent = env.rednetSent[1].message
+    H.truthy(sent.patterns["1A23"], "the schedule was not passed on")
+    eq(sent.patterns["1A23"].stops[4], "London Euston")
+    H.falsy(sent.services, "only a hub claims to be the authority on departures")
+  end)
+
+  it("registers the other rail computers it hears", function()
+    local env = newEnv({
+      modem = "ender_modem_0",
+      events = { { "rednet_message", 21, { station = "Rugby" }, "rail" } },
+    })
+    H.runOk(env, SCRIPT)
+    eq(env.internals.state.peers[21].station, "Rugby")
   end)
 
   it("says so when there is no modem to check", function()

@@ -517,6 +517,43 @@ a display keeps the broadcasts whose station name matches the `station` in its
 own config, ignoring the rest. **That one matching string is the entire
 pairing.**
 
+### The mesh
+
+Departures are the only thing that is addressed to one station. Everything
+else — **train sightings, measured hop times and whole schedules** — is pooled
+by every `rail` computer that can hear it, whoever sent it and whatever station
+it belongs to. So:
+
+> **Slap an ender modem on any rail computer and restart it. That is the whole
+> setup.** It will find every other one, and they will start sharing.
+
+This is worth doing even on a station that has cable to its own platforms,
+because there are things no single computer can work out alone:
+
+| Alone | On the mesh |
+|---|---|
+| Only times hops it can watch both ends of | Gets every hop any computer has timed |
+| Knows what calls at a platform only after a train has stood there | Learns it from a schedule read anywhere on the network |
+| An unvisited platform shows nothing | Fills in from the shared schedules |
+
+Run `rail link` on any of them to see who is out there and what they are
+sharing:
+
+```
+ender_modem_0  wireless
+rednet open on 1 modem(s)
+this display answers to: Kings Cross
+every rail computer on the radio pools schedules and
+hop times; no pairing and nothing to configure
+
+listening for hubs, press a key to stop
+computer 7: Kings Cross
+  4 services, 3 schedules, 6 hop times, 2 sightings
+computer 9: Peterborough
+  2 schedules, 6 hop times, 2 sightings
+  its departures are not ours, but the rest is worth having
+```
+
 The hub end:
 
 ```lua
