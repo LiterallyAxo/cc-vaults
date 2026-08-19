@@ -1008,3 +1008,260 @@ describe("rail: several screens, stats and updates", function()
     H.falsy(env.rebooted, "a short or unrecognisable payload must be ignored")
   end)
 end)
+
+-- A whole railway, run for more than a Minecraft day.  Four stations with
+-- nothing in common in their names, one train going round, and the clock left
+-- to roll past midnight -- which is every twenty real minutes, and is where
+-- timestamps that are "minutes past midnight" quietly start going backwards.
+describe("rail: a railway left running for a day and a half", function()
+  local LINE  = { "Aberdare", "Barmouth", "Cwmbran", "Dolgellau" }
+  local DWELL, LEG = 12, 48             -- in-game minutes
+  local CYCLE = #LINE * (DWELL + LEG)   -- 240: one full round trip
+  local RUN, STEP = 2160, 6             -- 36 in-game hours, checked every 6
+
+  local function lineSchedule()
+    local entries = {}
+    for i, name in ipairs(LINE) do entries[i] = stop(name) end
+    return { cyclic = true, entries = entries }
+  end
+
+  -- where the train is at a given point in the cycle: standing at a station,
+  -- or somewhere between two of them
+  local function whereIs(elapsed)
+    local into = elapsed % CYCLE
+    local slot = math.floor(into / (DWELL + LEG)) + 1
+    local within = into % (DWELL + LEG)
+    if within < DWELL then return slot, "standing" end
+    -- imminent for the last few minutes of the approach, as Create signals it
+    local nextSlot = slot % #LINE + 1
+    if within > (DWELL + LEG) - 6 then return nextSlot, "imminent" end
+    return nextSlot, "away"
+  end
+
+  local function simulate(assertions)
+    local env
+    local seen = {}
+    local events = {}
+    for step = 1, RUN / STEP do
+      events[step] = function(inner)
+        -- record what the board was showing before moving the world on
+        -- internals only lands on env after the run, so reach into the
+        -- sandbox for the live state while the script is still going
+        local live = inner.globals.__VAULT_TEST.internals
+        if step > 1 and live then
+          local state = live.state
+          seen[#seen + 1] = {
+            at       = step * STEP,
+            source   = state.source,
+            services = #state.services,
+            service  = state.services[1],
+            now      = inner.worldMinutes(),
+          }
+        end
+        inner.advance(STEP)
+        local elapsed = step * STEP
+        local slot, how = whereIs(elapsed)
+        for i, name in ipairs(LINE) do
+          local station = inner.stations["create:track_station_" .. (i - 1)]
+          station.present  = (i == slot and how == "standing")
+          station.imminent = (i == slot and how == "imminent")
+          station.enroute  = (i == slot and how == "away")
+          station.train    = (i == slot and how == "standing") and "1A23" or nil
+        end
+        inner.pushNext({ "key", inner.keys.r })
+      end
+    end
+
+    local stations = {}
+    for i, name in ipairs(LINE) do
+      stations["create:track_station_" .. (i - 1)] = {
+        name = name, schedule = lineSchedule(),
+      }
+    end
+    -- start with the train standing at Aberdare
+    stations["create:track_station_0"].present = true
+    stations["create:track_station_0"].train = "1A23"
+
+    env = newEnv({
+      time = 6.0, stations = stations, events = events,
+      files = cfg('  station = "Aberdare",\n  code = "ABD",'),
+    })
+    H.runOk(env, SCRIPT)
+    return env, seen
+  end
+
+  it("never loses the calling points, and never falls back to the demo", function()
+    local env, seen = simulate()
+    H.truthy(#seen > 300, "the simulation did not run: " .. #seen .. " samples")
+
+    local hours = (seen[#seen].now - seen[1].now) / 60
+    H.truthy(hours > 24, ("only %.1f in-game hours elapsed"):format(hours))
+
+    for _, sample in ipairs(seen) do
+      local at = ("at +%d min (source %s)"):format(sample.at, sample.source)
+      eq(sample.source, "live", "dropped off live " .. at)
+      H.truthy(sample.service, "no service on the board " .. at)
+      eq(sample.service.dest, "Dolgellau", "wrong destination " .. at)
+      eq(table.concat(sample.service.calls, "|"), "Barmouth|Cwmbran|Dolgellau",
+         "calling points changed " .. at)
+    end
+  end)
+
+  it("keeps predicted times sane the whole way through", function()
+    local _, seen = simulate()
+    for _, sample in ipairs(seen) do
+      local service, now = sample.service, sample.now
+      local at = ("at +%d min"):format(sample.at)
+      -- a departure is never in the distant past, and never further off than
+      -- one round trip; either would mean the arithmetic had drifted
+      H.truthy(service.depart > now - 60,
+               ("departure %d minutes in the past %s"):format(now - service.depart, at))
+      H.truthy(service.depart < now + CYCLE + 60,
+               ("departure %d minutes away %s"):format(service.depart - now, at))
+      H.truthy(service.arrive <= service.depart + 1, "arrival after departure " .. at)
+    end
+  end)
+
+  it("converges on the real hop times and stays there", function()
+    local env = simulate()
+    local legs = env.internals.state.legs
+    for i = 1, #LINE do
+      local from, to = LINE[i], LINE[i % #LINE + 1]
+      local leg = legs[env.internals.legKey(from, to)]
+      H.truthy(leg, ("never timed %s -> %s"):format(from, to))
+      H.truthy(leg.n >= 5, ("only %d samples for %s -> %s"):format(leg.n, from, to))
+      -- the simulated hop is LEG minutes; allow a step of sampling slop
+      H.truthy(math.abs(leg.mins - LEG) <= STEP,
+               ("%s -> %s settled on %.1f, not %d"):format(from, to, leg.mins, LEG))
+    end
+  end)
+
+  it("hands a day and a half of learning to another computer intact", function()
+    local env = simulate()
+    local learned = env.internals.state
+
+    -- exactly what link.publish would put on the wire
+    local payload = {
+      station   = "Aberdare",
+      sightings = learned.sightings,
+      legs      = learned.legs,
+      patterns  = learned.patterns,
+    }
+
+    -- a board at Aberdare with no station wired to it at all
+    local board = newEnv({
+      time = 6.0, day = 1,
+      modem = "ender_modem_0",
+      files = cfg('  station = "Aberdare",'),
+      events = { { "rednet_message", 7, payload, "rail" }, function(inner)
+        inner.pushNext({ "key", inner.keys.r })
+      end },
+    })
+    H.runOk(board, SCRIPT)
+
+    local mirrored = board.internals.state
+    for key, leg in pairs(learned.legs) do
+      H.truthy(mirrored.legs[key], "hop time did not cross the mesh: " .. key)
+      eq(mirrored.legs[key].n, leg.n, "sample count disagrees for " .. key)
+    end
+    H.truthy(mirrored.patterns["1A23"], "the schedule did not cross the mesh")
+  end)
+end)
+
+describe("rail: the master console", function()
+  local function hubEnv(extra)
+    local opts = {
+      width = 56, height = 20, modem = "ender_modem_0",
+      stations = {
+        ["create:track_station_0"] = {
+          name = "Create Central Platform 3", present = true,
+          train = "1A23", schedule = eustonSchedule(),
+        },
+      },
+    }
+    for key, value in pairs(extra or {}) do opts[key] = value end
+    return newEnv(opts)
+  end
+
+  it("puts an engineering console on a hub's monitor", function()
+    local env = hubEnv()
+    H.runOk(env, SCRIPT, "hub")
+    H.screenHas(env.frame, "MASTER")
+    H.screenHas(env.frame, "source")
+    H.screenHas(env.frame, "hop times")
+    H.screenHas(env.frame, "[ Resync ]")
+    H.screenHas(env.frame, "[ Updates ]")
+    H.screenHas(env.frame, "[ Rescan ]")
+    H.screenHas(env.frame, "[ Forget ]")
+  end)
+
+  it("does not turn an ordinary board into a console", function()
+    local env = hubEnv()
+    H.runOk(env, SCRIPT)
+    H.screenLacks(env.frame, "MASTER")
+    H.screenHas(env.frame, "Departures")
+  end)
+
+  it("runs the button that was touched", function()
+    local env = hubEnv({
+      events = { function(inner)
+        -- find Resync where it was actually drawn and press it
+        local live = inner.globals.__VAULT_TEST.internals
+        local button = live.state.buttons[1]
+        inner.pushNext({ "monitor_touch", "monitor_0", button.x1 + 1, button.y })
+      end },
+    })
+    H.runOk(env, SCRIPT, "hub")
+    H.contains(env.printed(), "resync: asked the mesh to report in")
+    local asked = false
+    for _, sent in ipairs(env.rednetSent) do
+      if sent.message.resync then asked = true end
+    end
+    H.truthy(asked, "resync was not broadcast")
+  end)
+
+  it("answers somebody else's resync with what it knows", function()
+    local env = hubEnv({
+      events = { { "rednet_message", 8, { station = "Elsewhere", resync = true },
+                   "rail" } },
+    })
+    H.runOk(env, SCRIPT)
+    local replied = false
+    for _, sent in ipairs(env.rednetSent) do
+      if sent.message.patterns and not sent.message.resync then replied = true end
+    end
+    H.truthy(replied, "a resync request went unanswered")
+  end)
+
+  it("forgets everything when told to, and starts learning again", function()
+    local env = hubEnv({
+      events = { function(inner)
+        local live = inner.globals.__VAULT_TEST.internals
+        H.truthy(next(live.state.known), "nothing was learned to forget")
+        for _, button in ipairs(live.state.buttons) do
+          if button.key == "forget" then
+            inner.pushNext({ "monitor_touch", "monitor_0", button.x1, button.y })
+          end
+        end
+      end },
+    })
+    H.runOk(env, SCRIPT, "hub")
+    H.contains(env.printed(), "memory cleared")
+  end)
+
+  it("says why the update button did nothing when http is off", function()
+    local env = hubEnv({
+      noHttp = true,
+      events = { function(inner)
+        local live = inner.globals.__VAULT_TEST.internals
+        for _, button in ipairs(live.state.buttons) do
+          if button.key == "update" then
+            inner.pushNext({ "monitor_touch", "monitor_0", button.x1, button.y })
+          end
+        end
+      end },
+    })
+    H.runOk(env, SCRIPT, "hub")
+    H.contains(env.printed(), "the http API is off")
+  end)
+end)

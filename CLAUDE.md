@@ -105,6 +105,11 @@ Full docs are in `docs/` — grep there before guessing. The ones that bite:
   hands a mode to each, in peripheral-name order. `canvas` and `state.mode`
   are upvalues the drawers close over, so `draw()` just repoints them per
   screen -- do not capture either into a local inside a drawer.
+- All internal time is `nowMinutes()`, monotonic in-game minutes since the
+  world began (`os.epoch("ingame") / 60000`). A Minecraft day is twenty real
+  minutes, so minutes-past-midnight runs backwards three times an hour and any
+  merge keyed on "whose timestamp is bigger" desyncs. `clockMinutes()` is the
+  time of day and is only for the clock face; `hhmm` already takes `% 1440`.
 - Only the master (`master = true`, which `rail hub` sets) polls GitHub for
   updates; it then broadcasts the new script over rednet and reboots, and
   everyone else installs what they were sent. Boards must never poll.

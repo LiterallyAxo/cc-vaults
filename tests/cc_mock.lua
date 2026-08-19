@@ -477,14 +477,29 @@ function mock.newEnv(opts)
   local clock = 0
   local timerId = 0
 
-  local worldTime = opts.time or 6.0
-  env.setTime = function(hours) worldTime = hours end
+  -- A monotonic world clock, in in-game minutes since the world began, the way
+  -- os.epoch("ingame") really behaves.  Tests that run for more than one
+  -- Minecraft day depend on this not going backwards at midnight.
+  local worldMinutes = (opts.time or 6.0) * 60
+  local startDay = opts.day or 0
+  worldMinutes = worldMinutes + startDay * 1440
+
+  -- setTime keeps the day it is already on and moves to that time of day
+  env.setTime = function(hours)
+    worldMinutes = math.floor(worldMinutes / 1440) * 1440 + hours * 60
+  end
+  -- advance is the one to use for long runs; it rolls past midnight
+  env.advance = function(minutes) worldMinutes = worldMinutes + minutes end
+  env.worldMinutes = function() return worldMinutes end
 
   local osApi = {
     clock = function() clock = clock + 0.05 return clock end,
-    time = function() return worldTime end,
-    day = function() return 1 end,
-    epoch = function() return 1700000000000 end,
+    time = function() return (worldMinutes % 1440) / 60 end,
+    day = function() return math.floor(worldMinutes / 1440) end,
+    epoch = function(locale)
+      if locale == "utc" then return 1700000000000 + worldMinutes * 60000 end
+      return worldMinutes * 60000
+    end,
     sleep = function() end,
     startTimer = function(delay)
       timerId = timerId + 1

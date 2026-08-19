@@ -1,5 +1,5 @@
 --[[
-  rail  --  UK style train information displays for CC: Tweaked        v0.7.0
+  rail  --  UK style train information displays for CC: Tweaked        v0.8.0
 
   Part of the cc-vaults package; install it with `vaults install rail`.
 
@@ -18,7 +18,8 @@
     rail route              in-carriage route diagram
     rail concourse          station clock over the next departures
     rail flap               push the next departure onto Create displays
-    rail hub                headless: read the stations, serve them by rednet
+    rail hub                the mesh database; with a monitor attached it
+                            becomes the engineering console
     rail stats              the back-office screen: mesh and data health
     rail stations           list what this computer can see, and why
     rail times              the hop times it has measured, and how sure
@@ -34,7 +35,7 @@
     right-click each modem until it says "peripheral attached", then a monitor
 ]]
 
-local VERSION = "0.7.0"
+local VERSION = "0.8.0"
 local CONFIG  = "rail.cfg"
 
 --------------------------------------------------------------------- config
@@ -422,12 +423,27 @@ end
 --------------------------------------------------------------------- clock
 -- Minecraft time is a float in hours; the real clock is there for anyone who
 -- would rather their railway ran to the wall clock.
-local function nowMinutes()
+-- The time of day, for putting on a clock face.
+local function clockMinutes()
   if config.clock == "real" then
     local t = os.date("*t")
     return t.hour * 60 + t.min
   end
   return math.floor((os.time() or 0) * 60 + 0.5) % 1440
+end
+
+-- Minutes since the world began, which only ever goes up.  Everything the
+-- script subtracts, compares or merges on uses this instead of the time of
+-- day, because a Minecraft day is twenty real minutes: a clock face runs
+-- backwards three times an hour, and two computers merging on "whose
+-- timestamp is bigger" would each decide the other's fresh data was stale
+-- and stop accepting it until the next midnight.
+local function nowMinutes()
+  if os.epoch then
+    local ok, ms = pcall(os.epoch, config.clock == "real" and "utc" or "ingame")
+    if ok and type(ms) == "number" then return ms / 60000 end
+  end
+  return (os.day and os.day() or 0) * 1440 + clockMinutes()
 end
 
 local function hhmm(minutes)
@@ -449,7 +465,7 @@ end
 
 local function clockText()
   if config.clock == "real" then return os.date("%H:%M") end
-  return hhmm(nowMinutes())
+  return hhmm(clockMinutes())
 end
 
 local function parseTime(text)
@@ -704,7 +720,7 @@ local function noteSighting(train, at, standing, now)
   end
   -- somewhere new: if we saw it leave the last place, that hop is now timed
   if was and was.leftAt then
-    noteLeg(was.at, at, (now - was.leftAt) % 1440)
+    noteLeg(was.at, at, now - was.leftAt)
   end
   state.sightings[train] = {
     at = at, t = now, standing = standing,
@@ -832,7 +848,7 @@ local function liveServices(now)
           if was.train ~= station.train then
             entry.arrived = now
             if was.seen then
-              local gap = (now - was.seen) % 1440
+              local gap = now - was.seen
               if gap > 0 and gap < 720 then
                 entry.every = was.every and (was.every + gap) / 2 or gap
               end
@@ -851,7 +867,7 @@ local function liveServices(now)
     local known = state.known[key]
     if known then
       local here = station.present or station.imminent or station.enroute
-      local since = (now - (known.seen or now)) % 1440
+      local since = now - (known.seen or now)
       -- Keep the platform on the board after the train has gone.  Dropping it
       -- the moment `isTrainPresent` goes false is what used to leave the board
       -- with nothing to show, and nothing is where the demo timetable crept in.
@@ -912,10 +928,14 @@ end
 local function bookedServices(now)
   local services = {}
   for _, row in ipairs(config.timetable or {}) do
-    local depart = parseTime(row.depart or row.time)
-    if depart then
-      local wait = (depart - now) % 1440
-      if wait > 1435 then wait = wait - 1440 end   -- keep one just gone at the top
+    local booked = parseTime(row.depart or row.time)
+    if booked then
+      -- a booked time is a time of day; hang it on whichever day we are in,
+      -- and roll it to tomorrow once it is properly past
+      local depart = math.floor(now / 1440) * 1440 + booked
+      if depart < now - 5 then depart = depart + 1440 end
+      if depart > now + 1435 then depart = depart - 1440 end
+      local wait = depart - now
       local calls = row.calls or {}
       services[#services + 1] = {
         platform  = tostring(row.platform or "-"),
@@ -927,7 +947,8 @@ local function bookedServices(now)
         operator  = row.operator or config.operator,
         train     = row.train,
         depart    = depart,
-        arrive    = parseTime(row.arrive) or depart,
+        arrive    = row.arrive and (depart - (booked - parseTime(row.arrive)))
+                    or depart,
         delay     = row.delay,
         cancelled = row.cancelled,
         wait      = wait,
@@ -1168,6 +1189,14 @@ function link.accept(message, sightingsOnly, from)
   -- Schedules travel best of all.  A schedule is the whole loop, so a station
   -- that has never had a train stand at it can still work out its own calling
   -- points from one another computer read at the other end of the line.
+  -- somebody pressed Resync: say what we know, once
+  if message.resync and link.open then
+    pcall(rednet.broadcast, {
+      station = config.station, master = config.master or nil,
+      sightings = state.sightings, legs = state.legs, patterns = state.patterns,
+    }, "rail")
+  end
+
   if type(message.patterns) == "table" then
     for train, pattern in pairs(message.patterns) do
       if type(pattern) == "table" and type(pattern.stops) == "table" then
@@ -1243,7 +1272,7 @@ local function stats()
   local peers, master = 0, nil
   local fresh = nowMinutes()
   for id, peer in pairs(state.peers) do
-    if ((fresh - (peer.at or 0)) % 1440) <= minutesFor(30) then peers = peers + 1 end
+    if (fresh - (peer.at or 0)) <= minutesFor(30) then peers = peers + 1 end
     if peer.master then master = id end
   end
   return {
@@ -1911,7 +1940,93 @@ local function drawStats(w, h)
   end
 end
 
+-- The master's console.  A hub has no passengers to inform, so if it has a
+-- monitor it gets the engineering screen instead: everything the mesh knows,
+-- and the buttons for the things you would otherwise reboot to do.
+local BUTTONS = {
+  { key = "resync",  label = "Resync"  },
+  { key = "update",  label = "Updates" },
+  { key = "rescan",  label = "Rescan"  },
+  { key = "forget",  label = "Forget"  },
+}
+
+local function drawConsole(w, h)
+  local s = stats()
+  canvas:clear(theme.base)
+  canvas:rect(1, 1, w, 1, theme.band)
+  canvas:text(2, 1, "rail " .. VERSION .. "  MASTER  " .. config.station,
+              theme.bandText, theme.band)
+  canvas:right(w - 1, 1, clockText(), theme.bandText, theme.band)
+
+  local left = {
+    { "source",     s.source, s.source == "live" and theme.good or theme.late },
+    { "services",   tostring(s.services) },
+    { "platforms",  tostring(s.platforms) },
+    { "schedules",  tostring(s.schedules) },
+    { "trains",     tostring(s.trains) },
+    { "hops timed", s.legs .. (s.settling > 0 and (" (" .. s.settling .. "?)") or "") },
+  }
+  local right = {
+    { "peers",  tostring(s.peers), s.peers == 0 and theme.dim or nil },
+    { "modems", tostring(s.modems), s.modems == 0 and theme.bad or nil },
+    { "scans",  tostring(s.scans) },
+    { "day",    tostring(math.floor(nowMinutes() / 1440)) },
+    { "update", update.version or "current" },
+  }
+  local half = math.floor(w / 2)
+  for i, row in ipairs(left) do
+    if i + 2 <= h then
+      canvas:text(2, i + 2, row[1], theme.dim)
+      canvas:text(14, i + 2, row[2], row[3] or theme.text)
+    end
+  end
+  for i, row in ipairs(right) do
+    if i + 2 <= h and half + 12 < w then
+      canvas:text(half + 1, i + 2, row[1], theme.dim)
+      canvas:text(half + 10, i + 2, row[2], row[3] or theme.text)
+    end
+  end
+
+  -- the hop times themselves, which is what you actually came to look at
+  local y = #left + 4
+  if y < h - 2 then
+    canvas:text(2, y, "hop times", theme.head)
+    canvas:rule(12, y, w - 13, theme.rule)
+    y = y + 1
+    local rows = {}
+    for key, leg in pairs(state.legs) do
+      local from, to = key:match("^(.-)%z(.*)$")
+      rows[#rows + 1] = { from = from or key, to = to or "?", leg = leg }
+    end
+    table.sort(rows, function(a, b) return a.from < b.from end)
+    for _, row in ipairs(rows) do
+      if y >= h - 1 then break end
+      canvas:text(3, y, trim(row.from .. " > " .. row.to, w - 18), theme.text)
+      canvas:right(w - 2, y, ("%3.0fm  x%d"):format(row.leg.mins, row.leg.n or 0),
+                   (row.leg.n or 0) < 3 and theme.late or theme.dim)
+      y = y + 1
+    end
+    if #rows == 0 then
+      canvas:text(3, y, "nothing timed yet", theme.dim)
+    end
+  end
+
+  -- buttons along the bottom, remembered so a touch can be matched to one
+  state.buttons = {}
+  local x, row = 2, h
+  for _, button in ipairs(BUTTONS) do
+    local label = "[ " .. button.label .. " ]"
+    if x + #label - 1 <= w then
+      canvas:text(x, row, label, theme.head, theme.panel)
+      state.buttons[#state.buttons + 1] =
+        { x1 = x, x2 = x + #label - 1, y = row, key = button.key }
+      x = x + #label + 1
+    end
+  end
+end
+
 local DRAW = {
+  console    = drawConsole,
   departures = drawDepartures,
   arrivals   = drawArrivals,
   platform   = drawPlatform,
@@ -1948,6 +2063,50 @@ local function draw()
     drawOne()
   end
   state.mode = was
+end
+
+-------------------------------------------------------------------- console
+-- What the buttons on the master's screen actually do.  Each returns the line
+-- to show as feedback, because a button that gives no sign it was pressed is
+-- indistinguishable from a broken one.
+local actions = {}
+
+function actions.resync()
+  refresh()
+  -- ask everybody to say what they know, then say what we know
+  pcall(rednet.broadcast, { station = config.station, resync = true }, "rail")
+  link.publish(config.master)
+  return "resync: asked the mesh to report in"
+end
+
+function actions.update()
+  if not http then return "updates: the http API is off on this server" end
+  if (config.autoUpdate or 0) <= 0 then return "updates: autoUpdate is 0" end
+  update.check()
+  return "updates: checking " .. REPO
+end
+
+function actions.rescan()
+  refresh()
+  return "rescan: " .. #state.services .. " service(s) from " ..
+         #state.stations .. " station(s)"
+end
+
+function actions.forget()
+  state.known, state.legs, state.sightings, state.patterns = {}, {}, {}, {}
+  state.dirty = true
+  rememberKnown()
+  refresh()
+  return "forget: memory cleared, learning again from scratch"
+end
+
+local function touched(x, y)
+  for _, button in ipairs(state.buttons or {}) do
+    if y == button.y and x >= button.x1 and x <= button.x2 then
+      return button.key
+    end
+  end
+  return nil
 end
 
 --------------------------------------------------------------------- main
@@ -2175,7 +2334,15 @@ for i = 1, #args do
 end
 if #wanted == 0 then wanted[1] = DRAW[mode] and mode or "departures" end
 
-if mode ~= "hub" and mode ~= "flap" then
+-- A hub has nothing to tell passengers, so a monitor on one becomes the
+-- engineering console rather than another departure board.
+if mode == "hub" then
+  for i, screen in ipairs(monitors) do
+    displays[i] = { name = screen.name, canvas = Canvas.new(screen.dev),
+                    mode = "console" }
+  end
+  if #displays > 0 then state.mode = "console" end
+elseif mode ~= "flap" then
   if #monitors > 0 then
     for i, screen in ipairs(monitors) do
       displays[i] = {
@@ -2220,7 +2387,7 @@ if config.master then
          or  ", update checks off"))
 end
 -- the headless modes leave the terminal colours alone; they only print
-if mode ~= "hub" and mode ~= "flap" then
+if mode ~= "flap" then
   for _, screen in ipairs(displays) do
     applyPalette(screen.canvas.dev)
   end
@@ -2230,6 +2397,7 @@ local ok, err = pcall(function()
   refresh()
   if mode == "hub" then
     printStats()
+    if #displays > 0 then draw() end
   elseif mode == "flap" then
     print("flap: " .. pushFlaps() .. " Create display sources")
   else
@@ -2252,14 +2420,15 @@ local ok, err = pcall(function()
         -- A hub that is still talking to us knows more than our own scan does.
         -- Give it three broadcasts to go quiet before taking over -- in-game
         -- minutes, so this has to be converted or it expires between them.
-        local quiet = (nowMinutes() - state.hubSeen) % 1440
+        local quiet = nowMinutes() - state.hubSeen
         if state.source ~= "hub" or quiet > minutesFor(config.refresh * 3) then
           refresh()
         end
         link.publish(mode == "hub")
         if mode == "hub" then
-          -- a hub has no board, so its terminal is the board
-          if (state.scans or 0) % 10 == 0 then
+          if #displays > 0 then draw() end
+          -- a hub with no monitor makes do with its terminal
+          if #displays == 0 and (state.scans or 0) % 10 == 0 then
             term.clear()
             term.setCursorPos(1, 1)
             print("rail " .. VERSION .. " hub -- " .. config.station)
@@ -2291,7 +2460,13 @@ local ok, err = pcall(function()
         restorePalette()
         os.reboot()
       end
-      if event[4] == "rail" and link.accept(event[3], mode == "hub", event[2]) then
+      local absorbed = event[4] == "rail" and
+                       link.accept(event[3], mode == "hub", event[2])
+      -- the console counts peers, so it repaints for any rail traffic at all,
+      -- not just for a message that changed what we know
+      if state.mode == "console" and event[4] == "rail" then
+        draw()
+      elseif absorbed then
         if mode == "hub" then
           -- nothing to redraw, but the ledger has moved on
         elseif mode == "flap" then pushFlaps() else draw() end
@@ -2323,6 +2498,14 @@ local ok, err = pcall(function()
 
     elseif name == "http_failure" then
       update.want = nil               -- try again on the next tick
+
+    elseif name == "monitor_touch" and state.mode == "console" then
+      local pressed = touched(event[3], event[4])
+      if pressed and actions[pressed] then
+        local said = actions[pressed]()
+        print(said)
+        draw()
+      end
 
     elseif name == "monitor_touch" or name == "mouse_click" then
       refresh()

@@ -633,7 +633,43 @@ another master is running on computer 7
 set master = false in one of their rail.cfg files
 ```
 
-## 13b. Is it working?
+## 13b. The master's console
+
+Put a monitor on the master and it stops being a departure board and becomes
+the engineering screen. Three wide by two tall is enough; four by three is
+comfortable.
+
+```
+ rail 0.8.0  MASTER  Kings Cross                    15:42
+
+ source      live            peers    3
+ services    4               modems   1
+ platforms   3               scans    412
+ schedules   2               day      7
+ trains      2               update   current
+ hops timed  6 (1?)
+
+ hop times ---------------------------------------------
+  Kings Cross > Peterborough                     48m  x7
+  Peterborough > York                            61m  x5
+  York > Edinburgh                               74m  x2
+
+ [ Resync ] [ Updates ] [ Rescan ] [ Forget ]
+```
+
+The buttons are touchable — right-click them on the monitor:
+
+| Button | What it does |
+|---|---|
+| **Resync** | Asks every computer on the mesh to report what it knows, then broadcasts our own. Use it after adding a computer, or if two boards disagree |
+| **Updates** | Checks GitHub now instead of waiting for the timer |
+| **Rescan** | Re-reads the station blocks immediately |
+| **Forget** | Wipes all learned schedules, sightings and hop times and starts again. For when you have rebuilt the railway and the old timings are nonsense |
+
+`x7` after a hop time is how many trips it is averaged over; anything under
+three is still settling and shows in the warning colour.
+
+## 13c. Is it working?
 
 ```
 rail stats

@@ -168,9 +168,10 @@ rail route            in-carriage route diagram
 rail concourse        station clock over the next departures
 rail stats            back-office screen: mesh and data health
 rail flap             push the next departure onto Create displays
-rail hub              headless: the mesh database; reads the stations,
-                      serves them by rednet, and is the only computer that
-                      checks for updates
+rail hub              the mesh database; reads the stations, serves them
+                      by rednet, and is the only computer that checks for
+                      updates. With a monitor attached it draws a touchable
+                      engineering console instead of a departure board
 rail stations         list what this computer can see, and why
 rail times            the hop times it has measured, and how sure
 rail link             check the modems and listen for hubs
