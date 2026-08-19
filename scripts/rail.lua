@@ -1,5 +1,5 @@
 --[[
-  rail  --  UK style train information displays for CC: Tweaked        v0.4.0
+  rail  --  UK style train information displays for CC: Tweaked        v0.5.0
 
   Part of the cc-vaults package; install it with `vaults install rail`.
 
@@ -19,6 +19,7 @@
     rail flap               push the next departure onto Create displays
     rail hub                headless: read the stations, serve them by rednet
     rail stations           list what this computer can see, and why
+    rail times              the hop times it has measured, and how sure
     rail link               check the modems and listen for hubs
     rail setup              write a starter rail.cfg you can edit
     rail help               this list
@@ -31,7 +32,7 @@
     right-click each modem until it says "peripheral attached", then a monitor
 ]]
 
-local VERSION = "0.4.0"
+local VERSION = "0.5.0"
 local CONFIG  = "rail.cfg"
 
 --------------------------------------------------------------------- config
@@ -441,6 +442,8 @@ local state = {
   stations = {},   -- live Create station records
   trains   = {},   -- train name -> where it was last seen
   known    = {},   -- platform -> the last calling pattern seen there
+  sightings = {},  -- train name -> where it is, and when it left the last stop
+  legs     = {},   -- "from\0to" -> how long that hop has taken, averaged
   source   = "demo",
   tick     = 0,
   lastScan = 0,
@@ -454,29 +457,39 @@ local state = {
 
 local MEMORY = "rail.dat"
 
-local function quote(value)
-  if type(value) == "number" then return tostring(value) end
-  return string.format("%q", tostring(value))
+-- textutils.serialise would do, but writing a Lua chunk means it comes back
+-- through the same `load` the config uses, and stays readable if it needs
+-- fixing by hand
+local function serialise(value, indent)
+  local kind = type(value)
+  if kind == "number" or kind == "boolean" then return tostring(value) end
+  if kind == "string" then return string.format("%q", value) end
+  if kind ~= "table" then return "nil" end
+  local pad, count = indent .. "  ", #value
+  local out = { "{" }
+  for i = 1, count do
+    out[#out + 1] = pad .. serialise(value[i], pad) .. ","
+  end
+  for key, item in pairs(value) do
+    local indexed = type(key) == "number" and key % 1 == 0 and key >= 1 and key <= count
+    if not indexed then
+      out[#out + 1] = pad .. "[" .. serialise(key, pad) .. "] = " ..
+                      serialise(item, pad) .. ","
+    end
+  end
+  out[#out + 1] = indent .. "}"
+  return table.concat(out, "\n")
 end
 
 local function rememberKnown()
   if not (fs and fs.open) then return end
-  local out = { "return {" }
-  for platform, entry in pairs(state.known) do
-    local calls = {}
-    for i, call in ipairs(entry.calls or {}) do calls[i] = quote(call) end
-    out[#out + 1] = string.format(
-      "  [%s] = { dest = %s, origin = %s, seen = %s, every = %s, train = %s, calls = { %s } },",
-      quote(platform), quote(entry.dest or ""),
-      entry.origin and quote(entry.origin) or "nil",
-      quote(entry.seen or 0), entry.every and quote(entry.every) or "nil",
-      entry.train and quote(entry.train) or "nil", table.concat(calls, ", "))
-  end
-  out[#out + 1] = "}"
   local handle = fs.open(MEMORY, "w")
   if not handle then return end
-  handle.write(table.concat(out, "\n"))
+  handle.write("return " .. serialise({
+    known = state.known, legs = state.legs, sightings = state.sightings,
+  }, ""))
   handle.close()
+  state.dirty = false
 end
 
 local function recallKnown()
@@ -488,7 +501,10 @@ local function recallKnown()
   local chunk = load(src, MEMORY, "t", {})
   if not chunk then return end
   local ok, result = pcall(chunk)
-  if ok and type(result) == "table" then state.known = result end
+  if not (ok and type(result) == "table") then return end
+  state.known     = result.known or {}
+  state.legs      = result.legs or {}
+  state.sightings = result.sightings or {}
 end
 
 --------------------------------------------------------------------- live
@@ -607,11 +623,71 @@ local function readStation(name)
   return station
 end
 
+-- Create tells a computer nothing about distance or speed -- only that a train
+-- is here, signalled, or somewhere on its way.  So the only honest source of a
+-- journey time is a stopwatch: note when a train leaves one station, note when
+-- it turns up at the next, and the difference is how long that hop takes.  A
+-- few round trips and the average is better than anything we could assume.
+
+local function legKey(from, to)
+  return tostring(from) .. "\0" .. tostring(to)
+end
+
+local function noteLeg(from, to, mins)
+  if from == to or mins <= 0 or mins > 720 then return end
+  local leg = state.legs[legKey(from, to)]
+  if leg then
+    -- settle towards what we just timed, but stop chasing noise after a
+    -- handful of samples; a changed route still pulls the average across
+    leg.mins = leg.mins + (mins - leg.mins) / math.min(leg.n + 1, 6)
+    leg.n = leg.n + 1
+  else
+    state.legs[legKey(from, to)] = { mins = mins, n = 1 }
+  end
+  state.dirty = true
+end
+
+local function legMinutes(from, to)
+  local leg = from and to and state.legs[legKey(from, to)]
+  if leg then return leg.mins, leg.n end
+  return minutesFor(config.legRun), 0
+end
+
+local function noteSighting(train, at, standing, now)
+  if not train or not at then return end
+  local was = state.sightings[train]
+  if was and was.at == at then
+    if was.standing and not standing then was.leftAt = now end   -- just left
+    was.standing, was.t = standing, now
+    return
+  end
+  -- somewhere new: if we saw it leave the last place, that hop is now timed
+  if was and was.leftAt then
+    noteLeg(was.at, at, (now - was.leftAt) % 1440)
+  end
+  state.sightings[train] = {
+    at = at, t = now, standing = standing,
+    leftAt = (not standing) and now or nil,
+  }
+end
+
+-- Where a signalled train actually is, and when it should therefore get here.
+local function predictedArrival(train, here, now)
+  local was = train and state.sightings[train]
+  if not was or was.at == here then return nil end
+  local mins, samples = legMinutes(was.at, here)
+  if samples == 0 then return nil end          -- never timed this hop; no guess
+  local due = (was.leftAt or was.t) + mins
+  if due < now then due = now end              -- running late, due any moment
+  return due
+end
+
 local function trackTrains(stations, now)
   for _, station in ipairs(stations) do
     local train = station.train
     if train and station.present then
       state.trains[train] = { at = station.name, standing = true, since = now }
+      noteSighting(train, station.name, true, now)
     end
   end
   -- a train that was standing here and is not any more has left
@@ -620,6 +696,7 @@ local function trackTrains(stations, now)
       for name, where in pairs(state.trains) do
         if where.at == station.name and where.standing and station.train ~= name then
           state.trains[name] = { at = station.name, standing = false, since = now }
+          noteSighting(name, station.name, false, now)
         end
       end
     end
@@ -662,8 +739,13 @@ local function liveServices(now)
         -- How often this platform actually turns round, measured rather than
         -- assumed: Create gives no arrival estimate, so the only honest way to
         -- say when the next one is due is to time the last one.
+        entry.arrived = now
         if was then
           entry.every = was.every
+          -- the same train still standing here arrived when it arrived; only a
+          -- new one restarts the clock, or the booked time creeps forward for
+          -- as long as it sits at the platform
+          if was.train == station.train then entry.arrived = was.arrived or now end
           if was.train ~= station.train and was.seen then
             local gap = (now - was.seen) % 1440
             if gap > 0 and gap < 720 then
@@ -672,7 +754,7 @@ local function liveServices(now)
           end
         end
         state.known[key] = entry
-        rememberKnown()
+        state.dirty = true
       end
     end
 
@@ -684,30 +766,45 @@ local function liveServices(now)
       -- the moment `isTrainPresent` goes false is what used to leave the board
       -- with nothing to show, and nothing is where the demo timetable crept in.
       if here or since <= (config.memory or 30) then
-        local wait
+        -- Absolute times, not "now + something".  Recomputing the offset on
+        -- every scan is what made the departure time tick forward with the
+        -- clock instead of settling on one and staying there.
+        local train = station.train or known.train
+        local due, arrive, timed
         if station.present then
-          wait = minutesFor(config.dwell)
-        elseif station.imminent then
-          wait = math.min(minutesFor(config.dwell), minutesFor(config.legRun))
-        elseif station.enroute then
-          wait = minutesFor(config.legRun)
+          arrive = known.arrived or now
+          due = arrive + minutesFor(config.dwell)
+          if due < now then due = now end
+          timed = true
         else
-          -- nothing in sight: due back one full round trip after the last one
-          wait = (known.every or minutesFor(config.legRun)) - since
-          if wait < 0 then wait = 0 end
+          local predicted = predictedArrival(train, station.name, now)
+          if predicted then
+            arrive, timed = predicted, true
+          elseif station.imminent then
+            arrive = now + math.min(minutesFor(config.dwell), minutesFor(config.legRun))
+          elseif station.enroute then
+            arrive = now + minutesFor(config.legRun)
+          else
+            -- nothing in sight: due back one measured round trip after the last
+            arrive = (known.seen or now) + (known.every or minutesFor(config.legRun))
+            timed = known.every ~= nil
+            if arrive < now then arrive = now end
+          end
+          due = arrive + minutesFor(config.dwell)
         end
         services[#services + 1] = {
           platform = key,
           dest     = known.dest,
           calls    = known.calls,
           origin   = known.origin,
-          train    = station.train or known.train,
-          depart   = now + wait,
-          arrive   = now + (station.present and 0 or wait),
+          train    = train,
+          depart   = due,
+          arrive   = arrive,
           present  = station.present,
           imminent = station.imminent,
           enroute  = station.enroute,
           expected = not here,
+          estimate = not timed,   -- no measurement behind this one yet
           every    = known.every,
           operator = config.operator,
           live     = true,
@@ -904,6 +1001,7 @@ local function refresh()
   sortByTime(arrivals, "arrive")
   state.arrivals = arrivals
   state.lastScan = now
+  if state.dirty then rememberKnown() end
 end
 
 --------------------------------------------------------------------- rednet
@@ -943,16 +1041,49 @@ end
 function link.publish()
   if not link.open then return end
   pcall(rednet.broadcast, {
-    station  = config.station,
-    services = state.services,
-    trains   = state.trains,
-    at       = nowMinutes(),
+    station   = config.station,
+    services  = state.services,
+    trains    = state.trains,
+    sightings = state.sightings,
+    legs      = state.legs,
+    at        = nowMinutes(),
   }, "rail")
 end
 
-function link.accept(message)
+function link.accept(message, sightingsOnly)
   if type(message) ~= "table" then return false end
-  if message.station and message.station ~= config.station then return false end
+
+  -- Sightings and leg times are worth having whoever sent them.  A board only
+  -- ever watches its own platforms, so the only way it can know how long the
+  -- hop from the last station takes is for that station to tell it.
+  local learned = false
+  if type(message.sightings) == "table" then
+    for train, seen in pairs(message.sightings) do
+      if type(seen) == "table" and seen.at then
+        local mine = state.sightings[train]
+        if not mine or (seen.t or 0) > (mine.t or 0) then
+          state.sightings[train] = seen
+          learned = true
+        end
+      end
+    end
+  end
+  if type(message.legs) == "table" then
+    for key, leg in pairs(message.legs) do
+      if type(leg) == "table" and type(leg.mins) == "number" then
+        local mine = state.legs[key]
+        -- whoever has timed the hop more often has the better average
+        if not mine or (leg.n or 0) > (mine.n or 0) then
+          state.legs[key] = leg
+          learned = true
+        end
+      end
+    end
+  end
+  if learned then state.dirty = true end
+
+  if sightingsOnly then return learned end
+  if message.station and message.station ~= config.station then return learned end
   -- a hub that is talking to us is the authority, even when it has nothing to
   -- report; showing the demo timetable instead would just be a lie
   if type(message.services) == "table" then
@@ -1233,10 +1364,18 @@ local function journey()
     standing = (step % 2) == 0
   end
 
+  -- Walk the route accumulating what each hop has actually been timed at,
+  -- anchored on when the train was really seen here rather than on the clock,
+  -- so the arrival times stop sliding forward between frames.
   local now = nowMinutes()
+  local anchor = (where and where.since) or now
   local times = {}
-  for i = 1, #route do
-    times[i] = now + (i - index) * minutesFor(config.legRun)
+  times[index] = anchor
+  for i = index + 1, #route do
+    times[i] = times[i - 1] + legMinutes(route[i - 1], route[i])
+  end
+  for i = index - 1, 1, -1 do
+    times[i] = times[i + 1] - legMinutes(route[i], route[i + 1])
   end
   return {
     route    = route,
@@ -1546,7 +1685,7 @@ mode = ALIASES[mode] or mode
 if mode == "help" or mode == "-h" or mode == "--help" then
   print("rail " .. VERSION .. " -- train information displays")
   print("modes: departures arrivals platform summary onboard route")
-  print("       concourse flap hub setup stations link help")
+  print("       concourse flap hub setup stations link times help")
   print("`rail stations` shows what is wired up, `rail link` what")
   print("is on the radio; `rail setup` writes rail.cfg")
   return
@@ -1648,6 +1787,50 @@ if mode == "stations" then
   return
 end
 
+-- What has actually been timed, and how sure it is.  "the times are wrong" is
+-- nearly always "it has not watched enough round trips yet", and that is not
+-- something you can see from the board itself.
+if mode == "times" then
+  recallKnown()
+  local rows = {}
+  for key, leg in pairs(state.legs) do
+    local from, to = key:match("^(.-)%z(.*)$")
+    rows[#rows + 1] = { from = from or key, to = to or "?",
+                        mins = leg.mins, n = leg.n or 0 }
+  end
+  table.sort(rows, function(a, b)
+    if a.from == b.from then return a.to < b.to end
+    return a.from < b.from
+  end)
+
+  if #rows == 0 then
+    print("no hops timed yet")
+    print("rail learns one every time it sees a train leave a")
+    print("station and reach the next, so leave it running")
+  else
+    print(#rows .. " hop(s) timed, in in-game minutes:")
+    for _, row in ipairs(rows) do
+      local seconds = row.mins / (config.clock == "real" and (1 / 60) or 1.2)
+      print(string.format("  %s -> %s", row.from, row.to))
+      print(string.format("    %.0f min  (%.0fs real)  from %d trip(s)%s",
+        row.mins, seconds, row.n, row.n < 3 and "  -- still settling" or ""))
+    end
+  end
+
+  local trains = {}
+  for name, seen in pairs(state.sightings) do trains[#trains + 1] = { name, seen } end
+  table.sort(trains, function(a, b) return a[1] < b[1] end)
+  if #trains > 0 then
+    print("")
+    print("last seen:")
+    for _, entry in ipairs(trains) do
+      print(string.format("  %s  %s %s", entry[1], entry[2].standing and "at" or "left",
+                          tostring(entry[2].at)))
+    end
+  end
+  return
+end
+
 if mode == "version" then
   print("rail " .. VERSION)
   return
@@ -1674,6 +1857,8 @@ if _G.__VAULT_TEST then
     marquee = marquee, joinCalls = joinCalls, hhmm = hhmm,
     parseTime = parseTime, nowMinutes = nowMinutes, ordinal = ordinal,
     flapLines = flapLines, pushFlaps = pushFlaps, palette = PALETTES.dot,
+    legKey = legKey, legMinutes = legMinutes, noteSighting = noteSighting,
+    predictedArrival = predictedArrival, minutesFor = minutesFor,
     template = TEMPLATE, version = VERSION,
     setMode = function(name) state.mode = name end,
   }
@@ -1742,8 +1927,12 @@ local ok, err = pcall(function()
       end
 
     elseif name == "rednet_message" then
-      if event[4] == "rail" and mode ~= "hub" and link.accept(event[3]) then
-        if mode == "flap" then pushFlaps() else draw() end
+      -- hubs take the sightings too: that is how a station learns the timings
+      -- of hops it cannot watch for itself
+      if event[4] == "rail" and link.accept(event[3], mode == "hub") then
+        if mode == "hub" then
+          -- nothing to redraw, but the ledger has moved on
+        elseif mode == "flap" then pushFlaps() else draw() end
       end
 
     elseif name == "monitor_touch" or name == "mouse_click" then

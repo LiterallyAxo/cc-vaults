@@ -15,6 +15,7 @@ vaults.lua          package manager; installed on the computer as vaults.lua
 manifest.txt        name | file | version | description, one line per script
 scripts/stock.lua   Create vault dashboard; installed as stock.lua, run as `stock`
 scripts/rail.lua    UK style train boards for Create trains; run as `rail [mode]`
+                    (`rail.dat` on the computer holds the timings it learned)
 RAIL-SETUP.md       player facing setup walkthrough for rail (README is reference)
 docs/               offline CC: Tweaked and CC:C Bridge docs (see docs/README.md)
 tests/              CC emulator, test suites, terminal preview tool
@@ -92,6 +93,15 @@ Full docs are in `docs/` — grep there before guessing. The ones that bite:
   `getSchedule()` while a train is actually standing there, and the schedule's
   `create:destination` entries are *filters*, so `Kings Cross *` matches every
   platform there. `rail` caches the calling pattern per platform because of it.
+- Create gives no distance, speed or arrival estimate -- only present /
+  imminent / enroute flags and the train name. `rail` therefore *times* the
+  railway: it records when a train leaves one station and reaches the next,
+  averages that over a few trips (`state.legs`, kept in `rail.dat`) and
+  predicts from the measurement. Hubs gossip sightings over rednet so a
+  computer can use hops it cannot watch itself.
+- The in-game clock runs 72x, so one real second is 1.2 in-game minutes.
+  Anything the player can time with a stopwatch (`dwell`, `legRun`) is
+  configured in real seconds and converted with `minutesFor`.
 - Blocks on a moving Create contraption are not ticked, so a computer inside an
   assembled train is dead until it is disassembled — onboard displays have to
   be driven from the lineside.

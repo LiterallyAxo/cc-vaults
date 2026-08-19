@@ -437,8 +437,44 @@ what stops at that platform and can advertise the next train before it arrives.
 **3. A hub over the radio** — section 13.
 
 **4. A demonstration timetable**, so a fresh computer still shows a board. It
-disappears the moment any real source appears. Set `demo = false` to turn it
-off and get an honest empty board instead.
+is switched off automatically the moment the computer can see a real station
+block, so it can never sit on top of your railway pretending to be it.
+
+## 11a. Where the *times* come from
+
+Create tells a computer three things about a station: a train is here, one is
+signalled, or one is somewhere on its way. There is no distance, no speed and
+no arrival estimate anywhere in the API. So `rail` does the only honest thing
+available and **times the railway with a stopwatch**.
+
+Every time it sees a train leave one station and turn up at the next, it writes
+down how long that took:
+
+```
+Create Central -> Coventry     14 min from 1 trip     -- still settling
+Coventry -> Rugby              11 min from 4 trips
+```
+
+The average settles over about six round trips, and after that the arrival
+times on the board are your railway's real timings rather than a guess. Run:
+
+```
+rail times
+```
+
+to see the whole ledger, how many trips each hop is based on, and which ones
+are still settling. It is kept in `rail.dat` so a reboot does not throw it away.
+
+Two things follow from this:
+
+- **A brand-new board guesses.** Until a hop has been timed once it falls back
+  to `legRun` (45 real seconds by default). Set `legRun` to roughly how long
+  one of your legs takes and the first few minutes will look sensible.
+- **A computer only times hops it can watch.** A board wired to one station
+  sees trains arrive but never sees them leave anywhere else. This is the real
+  reason to run hubs on ender modems: hubs broadcast their sightings, every
+  computer on the network pools them, and hops nobody could time alone get
+  timed. Section 13.
 
 ## 12. More than one screen
 
@@ -594,6 +630,7 @@ display prop look alive.
 | --- | --- | --- |
 | Board shows an obviously fake timetable | Nothing real is connected yet | Section 6; demo switches itself off once a station is visible |
 | `rail stations` finds nothing | A wired modem is not switched on | Right-click each modem until it is red |
+| Departure times look invented | It has not watched a full round trip yet | `rail times`; leave it running, section 11a |
 | Stations found but `[not ours]` | `station` does not match their names | Section 8 |
 | `platform -` in the listing | No number in the station name | Add one, or use `platforms` |
 | Board lists nothing at all | No train has stood at a platform yet | Wait for one, or write a timetable |
@@ -655,6 +692,7 @@ A timetable entry takes: `depart`, `arrive`, `platform`, `calls`, `dest`,
 | `rail flap` | Write to Create displays through CC:C Bridge |
 | `rail hub` | Headless: read the stations, broadcast them |
 | `rail stations` | List what this computer can see, and why |
+| `rail times` | Every hop it has timed, how long, and from how many trips |
 | `rail link` | List the modems and listen for hubs |
 | `rail setup` | Write a starter `rail.cfg` (`-f` overwrites) |
 | `rail help` | The list of modes |

@@ -169,6 +169,7 @@ rail concourse        station clock over the next departures
 rail flap             push the next departure onto Create displays
 rail hub              headless: read the stations, serve them by rednet
 rail stations         list what this computer can see, and why
+rail times            the hop times it has measured, and how sure
 rail link             check the modems and listen for hubs
 rail setup            write a starter rail.cfg you can edit
 ```

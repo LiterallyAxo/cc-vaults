@@ -293,6 +293,123 @@ describe("rail: reading Create stations", function()
     eq(env.internals.state.known["3"].every, 30, "30 in-game minutes between trains")
   end)
 
+  it("times a hop by watching a train leave one station and reach the next", function()
+    -- one computer wired to both ends, which is what a hub at a junction sees
+    local env = newEnv({
+      stations = {
+        ["create:track_station_0"] = {
+          name = "Create Central Platform 3", present = true,
+          train = "1A23", schedule = eustonSchedule(),
+        },
+        ["create:track_station_1"] = { name = "Coventry Platform 1" },
+      },
+      events = { function(inner)
+        local station = inner.stations["create:track_station_0"]
+        -- a station with no train reports no train name, which is how the
+        -- departure is spotted at all
+        station.present, station.train = false, nil
+        inner.pushNext({ "key", inner.keys.r })
+      end, function(inner)
+        inner.setTime(15.25)                                       -- 15 mins on
+        local far = inner.stations["create:track_station_1"]
+        far.present, far.train = true, "1A23"                      -- arrives
+        inner.pushNext({ "key", inner.keys.r })
+      end },
+    })
+    H.runOk(env, SCRIPT)
+    local key = env.internals.legKey("Create Central Platform 3", "Coventry Platform 1")
+    local leg = env.internals.state.legs[key]
+    H.truthy(leg, "the hop was never timed")
+    eq(leg.mins, 15, "15 in-game minutes from one to the other")
+    eq(leg.n, 1)
+  end)
+
+  it("predicts an arrival from a timed hop rather than a guess", function()
+    local env = newEnv({
+      stations = {
+        ["create:track_station_0"] = {
+          name = "Create Central Platform 3", enroute = true, train = "1A23",
+        },
+      },
+      files = { ["rail.dat"] = [[return {
+        known = { ["3"] = { dest = "London Euston", origin = "Coventry",
+                            seen = 890, train = "1A23", calls = { "London Euston" } } },
+        legs  = { ["Coventry\0Create Central Platform 3"] = { mins = 12, n = 4 } },
+        sightings = { ["1A23"] = { at = "Coventry", t = 894, standing = false,
+                                   leftAt = 894 } },
+      }]] },
+    })
+    H.runOk(env, SCRIPT)
+    local service = env.internals.state.services[1]
+    -- left Coventry at 14:54, and that hop has been timed at 12 minutes
+    eq(service.arrive, 894 + 12, "arrival comes off the measured hop")
+    H.truthy(not service.estimate, "a timed hop is not an estimate")
+  end)
+
+  it("holds a departure time still instead of sliding it with the clock", function()
+    local env = stationEnv({
+      events = { function(inner)
+        inner.setTime(15.1)                    -- six in-game minutes later
+        inner.pushNext({ "key", inner.keys.r })
+      end },
+    })
+    H.runOk(env, SCRIPT)
+    local service = env.internals.state.services[1]
+    -- the train arrived at 15:00 and has not moved, so it is still due to
+    -- leave 10 real seconds (12 in-game minutes) after it got there
+    eq(service.arrive, 900, "arrival is when it actually arrived")
+    eq(service.depart, 900 + 12, "and departure does not creep with the clock")
+  end)
+
+  it("learns hop times from another station over rednet", function()
+    local env = newEnv({
+      modem = "ender_modem_0",
+      events = { { "rednet_message", 9, {
+        station = "Somewhere Else",
+        legs = { ["Rugby\0Coventry"] = { mins = 21, n = 3 } },
+        sightings = { ["1M14"] = { at = "Rugby", t = 880, leftAt = 880 } },
+      }, "rail" } },
+    })
+    H.runOk(env, SCRIPT)
+    -- the services were for another station and rightly ignored...
+    H.truthy(env.internals.state.source ~= "hub")
+    -- ...but the timings are worth having whoever sent them
+    eq(env.internals.state.legs["Rugby\0Coventry"].mins, 21)
+    eq(env.internals.state.sightings["1M14"].at, "Rugby")
+  end)
+
+  it("falls back to the configured leg time until a hop has been timed", function()
+    local env = newEnv()
+    H.runOk(env, SCRIPT)
+    local mins, samples = env.internals.legMinutes("Nowhere", "Elsewhere")
+    eq(samples, 0)
+    eq(mins, env.internals.minutesFor(45), "45 real seconds in in-game minutes")
+  end)
+
+  it("reports what it has timed, and says when it is still settling", function()
+    local env = newEnv({
+      files = { ["rail.dat"] = [[return {
+        known = {},
+        legs = { ["Coventry\0Rugby"] = { mins = 12, n = 1 },
+                 ["Rugby\0London Euston"] = { mins = 30, n = 5 } },
+        sightings = { ["1A23"] = { at = "Rugby", t = 900, standing = true } },
+      }]] },
+    })
+    H.runOk(env, SCRIPT, "times")
+    local printed = env.printed()
+    H.contains(printed, "2 hop(s) timed")
+    H.contains(printed, "Coventry -> Rugby")
+    H.contains(printed, "still settling")       -- only one trip so far
+    H.contains(printed, "Rugby -> London Euston")
+    H.contains(printed, "1A23  at Rugby")
+  end)
+
+  it("says how to teach it when it has timed nothing", function()
+    local env = newEnv()
+    H.runOk(env, SCRIPT, "times")
+    H.contains(env.printed(), "no hops timed yet")
+  end)
+
   it("tracks where each train was last seen", function()
     local env = stationEnv()
     H.runOk(env, SCRIPT)
