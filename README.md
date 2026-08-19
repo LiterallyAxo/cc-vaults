@@ -166,13 +166,23 @@ rail summary [n]      one line "next train" dot matrix
 rail onboard          in-carriage passenger information
 rail route            in-carriage route diagram
 rail concourse        station clock over the next departures
+rail stats            back-office screen: mesh and data health
 rail flap             push the next departure onto Create displays
-rail hub              headless: read the stations, serve them by rednet
+rail hub              headless: the mesh database; reads the stations,
+                      serves them by rednet, and is the only computer that
+                      checks for updates
 rail stations         list what this computer can see, and why
 rail times            the hop times it has measured, and how sure
 rail link             check the modems and listen for hubs
 rail setup            write a starter rail.cfg you can edit
+
+rail departures arrivals platform      one mode per monitor, in
+                                       peripheral-name order
 ```
+
+A computer with several monitors attached drives them all: pass one mode per
+screen and they are handed out in peripheral-name order, so the mapping is
+stable across reboots. Fewer modes than screens and the last one repeats.
 
 `rail stations` is the one to run first, and the one to run when a board comes
 up empty:
@@ -262,11 +272,13 @@ leave out keeps its default.
 | `theme` | `"dot"` | `"dot"` amber dot matrix, `"lcd"` the modern navy screens |
 | `clock` | `"mc"` | `"mc"` in-game time, `"real"` your own clock |
 | `platform` | `nil` | which platform a `platform` / `summary` display serves |
-| `refresh` | `5` | seconds between peripheral scans |
+| `refresh` | `1` | seconds between peripheral scans |
 | `scroll` | `0.4` | seconds per column of scrolling text |
 | `rows` | `0` | departures to list; `0` means as many as fit |
 | `dwell` / `legRun` | `10` / `45` | **real seconds** a train stands, and a leg takes; converted to in-game minutes (1s = 1.2m) |
-| `memory` | `30` | in-game minutes a platform stays on the board after its train has gone |
+| `memory` | `900` | **real seconds** a platform stays on the board after its train has gone; the calling pattern itself is never forgotten |
+| `master` | `false` | this computer is the mesh database; `rail hub` sets it anyway. Only the master polls GitHub, and it pushes new versions to everybody else |
+| `autoUpdate` | `60` | seconds between update checks on the master; `0` turns it off |
 | `platforms` | `{}` | Train Station peripheral (or in-game name) to platform number |
 | `timetable` | `{}` | the booked services; see below |
 | `train` / `route` | `nil` | onboard and route displays: the Create train name and the stations it works through |

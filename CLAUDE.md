@@ -101,6 +101,13 @@ Full docs are in `docs/` — grep there before guessing. The ones that bite:
   sightings, hop times and whole schedules over rednet, so one can use hops
   and calling patterns it could never observe alone; only `rail hub` also
   broadcasts `services`, which is the one station-addressed field.
+- One computer can drive every monitor on its network: `rail dep arrivals`
+  hands a mode to each, in peripheral-name order. `canvas` and `state.mode`
+  are upvalues the drawers close over, so `draw()` just repoints them per
+  screen -- do not capture either into a local inside a drawer.
+- Only the master (`master = true`, which `rail hub` sets) polls GitHub for
+  updates; it then broadcasts the new script over rednet and reboots, and
+  everyone else installs what they were sent. Boards must never poll.
 - A Create station block with no "Platform N" in its name is platform 1. The
   trailing number on the peripheral name is Create's load order, not a
   platform, so it must never reach the board.

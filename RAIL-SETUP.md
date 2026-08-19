@@ -601,6 +601,65 @@ broadcasting whenever nobody is there, and the boards fall back to their own
 data after three missed broadcasts. Whatever you normally use to keep
 chunks loaded applies to the hub computer too.
 
+## 13a. One master, and automatic updates
+
+Pick **one** computer on the mesh to be the master. `rail hub` is automatically
+one; on any other computer set it in `rail.cfg`:
+
+```lua
+master = true,
+```
+
+The master does two jobs:
+
+1. **It is the database.** It holds the pooled schedules, sightings and hop
+   times and keeps serving them, so the network still knows the timings even
+   when the computer that measured them is in an unloaded chunk.
+2. **It is the only computer that checks for updates.** Twenty boards each
+   asking GitHub every minute would get the lot of them rate limited, so
+   exactly one asks. When it finds a new version it downloads it, installs it,
+   **broadcasts the new script over the mesh** and reboots. Every other board
+   installs what it was sent and restarts itself — no HTTP needed at their end,
+   so a board on a server with the http API turned off still keeps up.
+
+```lua
+autoUpdate = 60,    -- seconds between checks on the master; 0 turns it off
+```
+
+Run two masters and they will each tell you:
+
+```
+another master is running on computer 7
+set master = false in one of their rail.cfg files
+```
+
+## 13b. Is it working?
+
+```
+rail stats
+```
+
+is a display mode like any other — put it on a spare monitor in a back room and
+it stays up:
+
+```
+rail 0.6.0  Kings Cross                            15:42
+
+source      live
+services    4 on 3 platform(s)
+schedules   3
+trains      2
+hops timed  6  (1 settling)
+modems      1
+peers       3
+master      computer 7
+scans       412
+```
+
+`source` is the one to watch: `live` means it is reading the railway, `hub`
+means it is being fed over the mesh, `demo` means nothing real is connected.
+Press `s` on any running board to print the same thing to its terminal.
+
 ## 14. Make it start on its own
 
 Computers stop when their chunk unloads and restart when it comes back. Tell

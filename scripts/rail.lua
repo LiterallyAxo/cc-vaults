@@ -1,5 +1,5 @@
 --[[
-  rail  --  UK style train information displays for CC: Tweaked        v0.6.0
+  rail  --  UK style train information displays for CC: Tweaked        v0.7.0
 
   Part of the cc-vaults package; install it with `vaults install rail`.
 
@@ -10,6 +10,7 @@
   and Create flap displays / nixie tubes through CC:C Bridge.
 
     rail                    departures board (the default)
+    rail <mode> <mode> ...  one mode per monitor, in peripheral-name order
     rail arrivals           arrivals board
     rail platform [n]       platform board for platform n
     rail summary [n]        one line "next train" dot matrix
@@ -18,6 +19,7 @@
     rail concourse          station clock over the next departures
     rail flap               push the next departure onto Create displays
     rail hub                headless: read the stations, serve them by rednet
+    rail stats              the back-office screen: mesh and data health
     rail stations           list what this computer can see, and why
     rail times              the hop times it has measured, and how sure
     rail link               check the modems and listen for hubs
@@ -32,7 +34,7 @@
     right-click each modem until it says "peripheral attached", then a monitor
 ]]
 
-local VERSION = "0.6.0"
+local VERSION = "0.7.0"
 local CONFIG  = "rail.cfg"
 
 --------------------------------------------------------------------- config
@@ -44,15 +46,18 @@ local config = {
   theme     = "dot",            -- "dot" amber dot matrix, "lcd" colour screen
   clock     = "mc",             -- "mc" in-game time, "real" the system clock
   textScale = 0.5,              -- monitor text scale
-  refresh   = 5,                -- seconds between peripheral scans
+  refresh   = 1,                -- seconds between peripheral scans
   scroll    = 0.4,              -- seconds per column of scrolling text
   rotate    = 6,                -- seconds a rotating message stays up
   rows      = 0,                -- departures to list (0 = as many as fit)
   platform  = nil,              -- platform this display serves
   dwell     = 10,               -- seconds a train stands at a platform
   legRun    = 45,               -- seconds a train takes to reach the next one
-  memory    = 30,               -- minutes to keep showing a platform we have
-                                -- seen a train at but cannot see one at now
+  memory    = 900,              -- real seconds to keep showing a platform we
+                                -- have seen a train at but cannot see one at
+                                -- now; the pattern itself is never forgotten
+  autoUpdate = 60,              -- seconds between update checks, 0 for never
+  master    = false,            -- this computer is the mesh's database
   train     = nil,              -- onboard/route: the Create train name
   coach     = nil,              -- onboard: coach letter, shown in the corner
   route     = nil,              -- onboard/route: station names, in order
@@ -85,9 +90,25 @@ end
 local configOk, configErr = loadConfig()
 
 --------------------------------------------------------------------- device
-local mon = peripheral.find("monitor")
+-- Every monitor on the network, in peripheral-name order so the mapping from
+-- `rail departures platform` to which screen shows what is stable across
+-- reboots.  One computer can drive the whole station.
+local monitors = {}
+for _, name in ipairs(peripheral.getNames()) do
+  for _, kind in ipairs({ peripheral.getType(name) }) do
+    if kind == "monitor" then
+      monitors[#monitors + 1] = { name = name, dev = peripheral.wrap(name) }
+      break
+    end
+  end
+end
+table.sort(monitors, function(a, b) return a.name < b.name end)
+for _, screen in ipairs(monitors) do
+  if screen.dev.setTextScale then screen.dev.setTextScale(config.textScale) end
+end
+
+local mon = monitors[1] and monitors[1].dev
 local dev = mon or term.current()
-if mon and mon.setTextScale then mon.setTextScale(config.textScale) end
 
 local isColor = dev.isColour and dev.isColour() or false
 
@@ -161,20 +182,29 @@ else
   }
 end
 
-local savedPalette = {}
-local function applyPalette()
+-- A palette is per display and outlives the program, so each one it touches
+-- gets its original colours captured and put back on the way out.
+local savedPalettes = {}
+local function applyPalette(device)
+  device = device or dev
   local palette = PALETTES[config.theme] or PALETTES.dot
-  if not (isColor and dev.setPaletteColour) then return end
+  local colourful = device.isColour and device.isColour()
+  if not (colourful and device.setPaletteColour) then return end
+  local saved = {}
   for slot, rgb in pairs(palette) do
-    savedPalette[slot] = { dev.getPaletteColour(slot) }
-    dev.setPaletteColour(slot, rgb)
+    saved[slot] = { device.getPaletteColour(slot) }
+    device.setPaletteColour(slot, rgb)
   end
+  savedPalettes[#savedPalettes + 1] = { dev = device, slots = saved }
 end
 
 local function restorePalette()
-  if not dev.setPaletteColour then return end
-  for slot, rgb in pairs(savedPalette) do
-    dev.setPaletteColour(slot, rgb[1], rgb[2], rgb[3])
+  for _, entry in ipairs(savedPalettes) do
+    if entry.dev.setPaletteColour then
+      for slot, rgb in pairs(entry.slots) do
+        entry.dev.setPaletteColour(slot, rgb[1], rgb[2], rgb[3])
+      end
+    end
   end
 end
 
@@ -432,7 +462,7 @@ end
 --------------------------------------------------------------------- state
 local MODES = {
   "departures", "arrivals", "platform", "summary",
-  "onboard", "route", "concourse",
+  "onboard", "route", "concourse", "stats",
 }
 
 local state = {
@@ -825,7 +855,7 @@ local function liveServices(now)
       -- Keep the platform on the board after the train has gone.  Dropping it
       -- the moment `isTrainPresent` goes false is what used to leave the board
       -- with nothing to show, and nothing is where the demo timetable crept in.
-      if here or not known.seen or since <= (config.memory or 30) then
+      if here or not known.seen or since <= minutesFor(config.memory or 900) then
         -- Absolute times, not "now + something".  Recomputing the offset on
         -- every scan is what made the departure time tick forward with the
         -- clock instead of settling on one and staying there.
@@ -1064,6 +1094,7 @@ local function refresh()
   sortByTime(arrivals, "arrive")
   state.arrivals = arrivals
   state.lastScan = now
+  state.scans = (state.scans or 0) + 1
   if state.dirty then rememberKnown() end
 end
 
@@ -1109,6 +1140,7 @@ function link.publish(withServices)
   if not link.open then return end
   pcall(rednet.broadcast, {
     station   = config.station,
+    master    = config.master or nil,
     services  = withServices and state.services or nil,
     trains    = withServices and state.trains or nil,
     sightings = state.sightings,
@@ -1122,7 +1154,15 @@ function link.accept(message, sightingsOnly, from)
   if type(message) ~= "table" then return false end
 
   if from then
-    state.peers[from] = { station = message.station, at = nowMinutes() }
+    state.peers[from] = {
+      station = message.station, at = nowMinutes(), master = message.master,
+    }
+    -- one database per mesh, or two of them fight over what is true
+    if message.master and config.master and not state.warnedMaster then
+      state.warnedMaster = true
+      printError("another master is running on computer " .. tostring(from))
+      printError("set master = false in one of their rail.cfg files")
+    end
   end
 
   -- Schedules travel best of all.  A schedule is the whole loop, so a station
@@ -1184,6 +1224,113 @@ function link.accept(message, sightingsOnly, from)
   end
   if type(message.trains) == "table" then state.trains = message.trains end
   state.hubSeen = nowMinutes()
+  return true
+end
+
+--------------------------------------------------------------------- stats
+local function tally(t)
+  local n = 0
+  for _ in pairs(t or {}) do n = n + 1 end
+  return n
+end
+
+local function stats()
+  local timed, settling = 0, 0
+  for _, leg in pairs(state.legs) do
+    timed = timed + 1
+    if (leg.n or 0) < 3 then settling = settling + 1 end
+  end
+  local peers, master = 0, nil
+  local fresh = nowMinutes()
+  for id, peer in pairs(state.peers) do
+    if ((fresh - (peer.at or 0)) % 1440) <= minutesFor(30) then peers = peers + 1 end
+    if peer.master then master = id end
+  end
+  return {
+    source    = state.source,
+    services  = #state.services,
+    platforms = tally(state.known),
+    schedules = tally(state.patterns),
+    trains    = tally(state.sightings),
+    legs      = timed,
+    settling  = settling,
+    peers     = peers,
+    master    = master,
+    modems    = link.modems,
+    scans     = state.scans or 0,
+    uptime    = state.uptime or 0,
+  }
+end
+
+local function printStats()
+  local s = stats()
+  print(("source %s, %d service(s) on %d platform(s)")
+        :format(s.source, s.services, s.platforms))
+  print(("%d schedule(s), %d train(s) tracked, %d hop(s) timed%s")
+        :format(s.schedules, s.trains, s.legs,
+                s.settling > 0 and (" (" .. s.settling .. " settling)") or ""))
+  print(("%d modem(s), %d peer(s)%s, %d scan(s)")
+        :format(s.modems, s.peers,
+                s.master and (", master #" .. s.master) or
+                (config.master and ", we are master" or ", no master"),
+                s.scans))
+end
+
+--------------------------------------------------------------------- update
+-- Only the master polls GitHub.  Twenty boards each asking raw.githubusercontent
+-- every minute is a good way to get rate limited, so exactly one computer
+-- checks and then pushes the new script to everybody else over the mesh --
+-- which also means a board with no http access still gets updated.
+--
+-- Requests are asynchronous on purpose: `http.get` blocks the event loop, and
+-- a board that stops repainting while it waits on a web request is worse than
+-- one that updates a minute later.
+local REPO   = "LiterallyAxo/cc-vaults"
+local RAW    = "https://raw.githubusercontent.com/" .. REPO .. "/main/"
+local update = { want = nil, version = nil }
+
+local function bust(path)
+  return RAW .. path .. "?cb=" .. tostring(os.epoch and os.epoch("utc") or os.clock())
+end
+
+local function ourProgram()
+  local path = shell and shell.getRunningProgram and shell.getRunningProgram()
+  if type(path) == "string" and #path > 0 then return path end
+  return "rail.lua"
+end
+
+function update.check()
+  if not (http and config.master) or (config.autoUpdate or 0) <= 0 then return end
+  update.want = "manifest"
+  update.url = bust("manifest.txt")
+  pcall(http.request, update.url)
+end
+
+-- true when a newer version was named and the script is now being fetched
+function update.gotManifest(body)
+  for line in tostring(body):gmatch("[^\r\n]+") do
+    local name, file, version = line:match("^%s*([%w_%-]+)%s*|%s*(%S+)%s*|%s*(%S+)")
+    if name == "rail" then
+      if version and version ~= VERSION then
+        update.version, update.want = version, "script"
+        update.url = bust(file)
+        pcall(http.request, update.url)
+        return true
+      end
+      break
+    end
+  end
+  update.want = nil
+  return false
+end
+
+function update.install(body)
+  if type(body) ~= "string" or #body < 100 then return false end
+  if not body:find("local VERSION", 1, true) then return false end   -- not us
+  local handle = fs.open(ourProgram(), "w")
+  if not handle then return false end
+  handle.write(body)
+  handle.close()
   return true
 end
 
@@ -1730,6 +1877,40 @@ local function writeTemplate(force)
 end
 
 --------------------------------------------------------------------- draw
+-- Not a passenger display: the back-office screen, for answering "is it
+-- actually working" without reading the terminal over somebody's shoulder.
+local function drawStats(w, h)
+  local s = stats()
+  canvas:clear(theme.base)
+  canvas:rect(1, 1, w, 1, theme.band)
+  canvas:text(2, 1, "rail " .. VERSION .. "  " .. config.station,
+              theme.bandText, theme.band)
+  canvas:right(w - 1, 1, clockText(), theme.bandText, theme.band)
+
+  local rows = {
+    { "source",     s.source, s.source == "demo" and theme.late or theme.good },
+    { "services",   s.services .. " on " .. s.platforms .. " platform(s)" },
+    { "schedules",  tostring(s.schedules) },
+    { "trains",     tostring(s.trains) },
+    { "hops timed", s.legs .. (s.settling > 0 and ("  (" .. s.settling ..
+                    " settling)") or "") ,
+                    s.settling > 0 and theme.late or theme.good },
+    { "modems",     tostring(s.modems), s.modems == 0 and theme.bad or nil },
+    { "peers",      tostring(s.peers), s.peers == 0 and theme.dim or nil },
+    { "master",     config.master and "this computer"
+                    or (s.master and ("computer " .. s.master) or "none"),
+                    (not config.master and not s.master) and theme.bad or nil },
+    { "scans",      tostring(s.scans) },
+  }
+  local y = 3
+  for _, row in ipairs(rows) do
+    if y > h then break end
+    canvas:text(2, y, row[1], theme.dim)
+    canvas:text(14, y, tostring(row[2]), row[3] or theme.text)
+    y = y + 1
+  end
+end
+
 local DRAW = {
   departures = drawDepartures,
   arrivals   = drawArrivals,
@@ -1738,9 +1919,12 @@ local DRAW = {
   onboard    = drawOnboard,
   route      = drawRoute,
   concourse  = drawConcourse,
+  stats      = drawStats,
 }
 
-local function draw()
+-- One screen.  `canvas` and `state.mode` are upvalues the drawers close over,
+-- so pointing them at another display is all it takes to paint a second one.
+local function drawOne()
   local w, h = canvas.w, canvas.h
   canvas:clear(theme.base)
   local drawer = DRAW[state.mode] or drawDepartures
@@ -1750,6 +1934,20 @@ local function draw()
     drawer(w, h)
   end
   canvas:flush()
+end
+
+-- Filled in by main once the modes are known: one entry per screen this
+-- computer drives, each with its own canvas and its own mode.
+local displays = {}
+
+local function draw()
+  if #displays == 0 then return drawOne() end
+  local was = state.mode
+  for _, screen in ipairs(displays) do
+    canvas, state.mode = screen.canvas, screen.mode
+    drawOne()
+  end
+  state.mode = was
 end
 
 --------------------------------------------------------------------- main
@@ -1772,7 +1970,7 @@ mode = ALIASES[mode] or mode
 if mode == "help" or mode == "-h" or mode == "--help" then
   print("rail " .. VERSION .. " -- train information displays")
   print("modes: departures arrivals platform summary onboard route")
-  print("       concourse flap hub setup stations link times help")
+  print("       concourse stats flap hub setup stations link times help")
   print("`rail stations` shows what is wired up, `rail link` what")
   print("is on the radio; `rail setup` writes rail.cfg")
   return
@@ -1966,16 +2164,43 @@ if _G.__VAULT_TEST then
   }
 end
 
+-- `rail departures platform summary` puts one mode on each monitor, in
+-- peripheral-name order.  Fewer modes than monitors and the last one repeats,
+-- which is what you want when every screen on a concourse shows the same thing.
+local wanted = {}
+for i = 1, #args do
+  local name = tostring(args[i]):lower()
+  name = ALIASES[name] or name
+  if DRAW[name] then wanted[#wanted + 1] = name end
+end
+if #wanted == 0 then wanted[1] = DRAW[mode] and mode or "departures" end
+
+if mode ~= "hub" and mode ~= "flap" then
+  if #monitors > 0 then
+    for i, screen in ipairs(monitors) do
+      displays[i] = {
+        name   = screen.name,
+        canvas = Canvas.new(screen.dev),
+        mode   = wanted[math.min(i, #wanted)],
+      }
+    end
+  else
+    displays[1] = { name = "terminal", canvas = canvas, mode = wanted[1] }
+  end
+  state.mode = displays[1].mode
+end
+
 term.clear()
 term.setCursorPos(1, 1)
 print("rail " .. VERSION .. " -- " .. mode)
 print("station: " .. config.station)
 if configErr then printError(CONFIG .. ": " .. tostring(configErr)) end
 if not configOk then print("no " .. CONFIG .. "; run `rail setup` to write one") end
-print(mon and ("display: " .. peripheral.getName(mon) .. " " ..
-               canvas.w .. "x" .. canvas.h .. " chars")
-          or  ("display: terminal " .. canvas.w .. "x" .. canvas.h))
-print("keys: [q]uit  [r]efresh  [tab] next mode")
+for _, screen in ipairs(displays) do
+  print(("display: %s %dx%d  %s"):format(
+    screen.name, screen.canvas.w, screen.canvas.h, screen.mode))
+end
+print("keys: [q]uit  [r]efresh  [tab] next mode  [s]tats")
 
 recallKnown()
 if next(state.known) then
@@ -1984,14 +2209,27 @@ if next(state.known) then
   print("remembered " .. count .. " platform(s) from " .. MEMORY)
 end
 
+-- `rail hub` is the mesh's database whether or not the config says so
+if mode == "hub" then config.master = true end
+
 link.start()
+if config.master then
+  print("master: this computer is the mesh database" ..
+        (http and (config.autoUpdate or 0) > 0
+         and (", checking for updates every " .. config.autoUpdate .. "s")
+         or  ", update checks off"))
+end
 -- the headless modes leave the terminal colours alone; they only print
-if mode ~= "hub" and mode ~= "flap" then applyPalette() end
+if mode ~= "hub" and mode ~= "flap" then
+  for _, screen in ipairs(displays) do
+    applyPalette(screen.canvas.dev)
+  end
+end
 
 local ok, err = pcall(function()
   refresh()
   if mode == "hub" then
-    print("hub: serving " .. #state.services .. " services on rednet")
+    printStats()
   elseif mode == "flap" then
     print("flap: " .. pushFlaps() .. " Create display sources")
   else
@@ -2000,6 +2238,10 @@ local ok, err = pcall(function()
 
   local scanTimer = os.startTimer(config.refresh)
   local tickTimer = os.startTimer(config.scroll)
+  -- only the master ever talks to GitHub; see the update section
+  local checkTimer = (config.master and (config.autoUpdate or 0) > 0)
+                     and os.startTimer(config.autoUpdate) or nil
+  if checkTimer then update.check() end
 
   while true do
     local event = { os.pullEvent() }
@@ -2016,13 +2258,23 @@ local ok, err = pcall(function()
         end
         link.publish(mode == "hub")
         if mode == "hub" then
-          -- nothing to draw
+          -- a hub has no board, so its terminal is the board
+          if (state.scans or 0) % 10 == 0 then
+            term.clear()
+            term.setCursorPos(1, 1)
+            print("rail " .. VERSION .. " hub -- " .. config.station)
+            printStats()
+            print("keys: [q]uit  [r]efresh")
+          end
         elseif mode == "flap" then
           pushFlaps()
         else
           draw()
         end
         scanTimer = os.startTimer(config.refresh)
+      elseif checkTimer and event[2] == checkTimer then
+        update.check()
+        checkTimer = os.startTimer(config.autoUpdate)
       elseif event[2] == tickTimer then
         state.tick = state.tick + 1
         if mode ~= "hub" and mode ~= "flap" then draw() end
@@ -2032,11 +2284,45 @@ local ok, err = pcall(function()
     elseif name == "rednet_message" then
       -- hubs take the sightings too: that is how a station learns the timings
       -- of hops it cannot watch for itself
+      local pushed = type(event[3]) == "table" and event[3].update
+      if event[4] == "rail" and pushed and pushed ~= VERSION
+         and not config.master and update.install(event[3].source) then
+        print("mesh pushed rail " .. tostring(pushed) .. "; restarting")
+        restorePalette()
+        os.reboot()
+      end
       if event[4] == "rail" and link.accept(event[3], mode == "hub", event[2]) then
         if mode == "hub" then
           -- nothing to redraw, but the ledger has moved on
         elseif mode == "flap" then pushFlaps() else draw() end
       end
+
+    elseif name == "http_success" then
+      local body = event[3] and event[3].readAll()
+      if event[3] then event[3].close() end
+      if update.want == "manifest" then
+        if update.gotManifest(body) then
+          print("rail " .. update.version .. " is out; fetching")
+        end
+      elseif update.want == "script" then
+        update.want = nil
+        if update.install(body) then
+          print("updated to " .. update.version .. "; telling the mesh")
+          -- push the script itself rather than the news: one broadcast, and a
+          -- board with no http access still gets it
+          pcall(rednet.broadcast,
+                { station = config.station, update = update.version, source = body },
+                "rail")
+          sleep(1)                     -- let it go out before we go down
+          restorePalette()
+          os.reboot()
+        else
+          printError("update download looked wrong; staying on " .. VERSION)
+        end
+      end
+
+    elseif name == "http_failure" then
+      update.want = nil               -- try again on the next tick
 
     elseif name == "monitor_touch" or name == "mouse_click" then
       refresh()
@@ -2049,17 +2335,21 @@ local ok, err = pcall(function()
         refresh()
         if mode ~= "hub" and mode ~= "flap" then draw() end
       elseif key == keys.tab and mode ~= "hub" and mode ~= "flap" then
+        -- cycles the first screen only; the rest keep the job they were given
+        local first = displays[1]
         for i, entry in ipairs(MODES) do
-          if entry == state.mode then
-            state.mode = MODES[i % #MODES + 1]
+          if first and entry == first.mode then
+            first.mode = MODES[i % #MODES + 1]
             break
           end
         end
         draw()
+      elseif key == keys.s and mode ~= "hub" and mode ~= "flap" then
+        printStats()
       end
 
     elseif name == "monitor_resize" or name == "term_resize" then
-      canvas:resize()
+      for _, screen in ipairs(displays) do screen.canvas:resize() end
       if mode ~= "hub" and mode ~= "flap" then draw() end
 
     elseif name == "peripheral" or name == "peripheral_detach" then

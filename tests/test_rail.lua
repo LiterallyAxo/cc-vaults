@@ -902,3 +902,109 @@ describe("rail: odds and ends", function()
              "the ticker should not repaint the whole board")
   end)
 end)
+
+describe("rail: several screens, stats and updates", function()
+  local function boardEnv(extra)
+    local opts = {
+      stations = {
+        ["create:track_station_0"] = {
+          name = "Create Central Platform 3", present = true,
+          train = "1A23", schedule = eustonSchedule(),
+        },
+      },
+    }
+    for key, value in pairs(extra or {}) do opts[key] = value end
+    return newEnv(opts)
+  end
+
+  it("gives each monitor its own mode, in peripheral-name order", function()
+    local env = boardEnv({ monitors = { "monitor_0", "monitor_1" } })
+    H.runOk(env, SCRIPT, "departures", "arrivals")
+    H.screenHas(env.frame, "Departures")
+    H.screenHas(env.frames["monitor_1"], "Arrivals")
+  end)
+
+  it("repeats the last mode when there are more screens than modes", function()
+    local env = boardEnv({ monitors = { "monitor_0", "monitor_1", "monitor_2" } })
+    H.runOk(env, SCRIPT, "departures")
+    H.screenHas(env.frame, "Departures")
+    H.screenHas(env.frames["monitor_1"], "Departures")
+    H.screenHas(env.frames["monitor_2"], "Departures")
+  end)
+
+  it("lists every screen and its job at startup", function()
+    local env = boardEnv({ monitors = { "monitor_0", "monitor_1" } })
+    H.runOk(env, SCRIPT, "departures", "platform")
+    local printed = env.printed()
+    H.contains(printed, "display: monitor_0")
+    H.contains(printed, "display: monitor_1")
+    H.contains(printed, "platform")
+  end)
+
+  it("draws a stats board", function()
+    local env = boardEnv({ modem = "ender_modem_0" })
+    H.runOk(env, SCRIPT, "stats")
+    H.screenHas(env.frame, "rail")
+    H.screenHas(env.frame, "source")
+    H.screenHas(env.frame, "hops timed")
+    H.screenHas(env.frame, "master")
+  end)
+
+  it("makes a hub the master and says so", function()
+    local env = boardEnv({ modem = "ender_modem_0", events = { { "timer", 1 } } })
+    H.runOk(env, SCRIPT, "hub")
+    H.contains(env.printed(), "master: this computer is the mesh database")
+    eq(env.rednetSent[1].message.master, true)
+  end)
+
+  it("does not claim to be master on an ordinary board", function()
+    local env = boardEnv({ modem = "ender_modem_0", events = { { "timer", 1 } } })
+    H.runOk(env, SCRIPT)
+    H.falsy(env.rednetSent[1].message.master)
+  end)
+
+  it("only the master asks the update server", function()
+    local board = boardEnv({ modem = "ender_modem_0", events = { { "timer", 1 } } })
+    H.runOk(board, SCRIPT)
+    eq(#board.httpRequests, 0, "a board must never poll github")
+
+    local hub = boardEnv({ modem = "ender_modem_0", events = { { "timer", 1 } } })
+    H.runOk(hub, SCRIPT, "hub")
+    H.truthy(#hub.httpRequests > 0, "the master should have checked")
+    H.contains(hub.httpRequests[1], "manifest.txt")
+  end)
+
+  it("warns when a second master turns up", function()
+    local env = boardEnv({
+      modem = "ender_modem_0",
+      events = { { "rednet_message", 4, { station = "Elsewhere", master = true },
+                   "rail" } },
+    })
+    H.runOk(env, SCRIPT, "hub")
+    H.contains(env.printed(), "another master is running on computer 4")
+  end)
+
+  it("installs a script pushed over the mesh and reboots", function()
+    local env = boardEnv({
+      modem = "ender_modem_0",
+      events = { { "rednet_message", 4, {
+        station = "Create Central", update = "9.9.9",
+        source = 'local VERSION = "9.9.9"\n' .. string.rep("-- new\n", 40),
+      }, "rail" } },
+    })
+    H.runOk(env, SCRIPT)
+    H.contains(env.printed(), "mesh pushed rail 9.9.9")
+    H.truthy(env.rebooted, "it should have restarted onto the new script")
+  end)
+
+  it("refuses a pushed script that does not look like rail", function()
+    local env = boardEnv({
+      modem = "ender_modem_0",
+      events = { { "rednet_message", 4, {
+        station = "Create Central", update = "9.9.9", source = "rm -rf",
+      }, "rail" } },
+    })
+    H.runOk(env, SCRIPT)
+    H.falsy(env.rebooted, "a short or unrecognisable payload must be ignored")
+  end)
+end)

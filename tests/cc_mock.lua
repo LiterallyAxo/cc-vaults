@@ -306,6 +306,21 @@ function mock.newEnv(opts)
   local monitorName = opts.monitorName
   if monitorName == nil then monitorName = "monitor_0" end
 
+  -- extra monitors, for testing one computer driving several boards.  Each
+  -- gets its own Screen, reachable afterwards as env.screens[name].
+  local extraScreens, extraApis = {}, {}
+  for _, name in ipairs(opts.monitors or {}) do
+    if name ~= monitorName then
+      local extra = Screen.new(width, height, opts.color ~= false)
+      extraScreens[name] = extra
+      extraApis[name] = extra:api()
+      extraApis[name].getName = function() return name end
+    end
+  end
+  env.screens = extraScreens
+  env.frames = {}
+  env.httpRequests = {}
+
   local function peripheralNames()
     local names = {}
     for name in pairs(vaults) do names[#names + 1] = name end
@@ -314,6 +329,7 @@ function mock.newEnv(opts)
     for name in pairs(opts.extras or {}) do names[#names + 1] = name end
     for name in pairs(modems) do names[#names + 1] = name end
     if monitorName then names[#names + 1] = monitorName end
+    for name in pairs(extraScreens) do names[#names + 1] = name end
     table.sort(names)
     return names
   end
@@ -323,7 +339,7 @@ function mock.newEnv(opts)
     if stations[name] then return "Create_Station" end
     if sources[name] then return "create_source" end
     if modems[name] then return "modem" end
-    if name == monitorName then return "monitor" end
+    if name == monitorName or extraScreens[name] then return "monitor" end
     local extra = (opts.extras or {})[name]
     if extra then return extra end
     return nil
@@ -408,6 +424,7 @@ function mock.newEnv(opts)
       return { isWireless = function() return isWireless(name) end }
     end
     if name == monitorName then return monitorApi end
+    if extraApis[name] then return extraApis[name] end
     return nil
   end
 
@@ -476,6 +493,16 @@ function mock.newEnv(opts)
     end,
     cancelTimer = function() end,
     queueEvent = function(...) queue[#queue + 1] = { ... } end,
+    -- a real reboot never returns; the mock records it and lets the loop
+    -- unwind through the usual quit key so tests can assert on what was drawn
+    reboot = function()
+      env.rebooted = true
+      table.insert(queue, 1, { "key", KEYS.q })
+    end,
+    shutdown = function()
+      env.shutdown = true
+      table.insert(queue, 1, { "key", KEYS.q })
+    end,
     getComputerLabel = function() return "test" end,
     date = os.date,
     pullEvent = function()
@@ -552,6 +579,30 @@ function mock.newEnv(opts)
         close = function() end,
       }
     end,
+    -- asynchronous form: records the url and queues the reply as an event, the
+    -- way CC does, so a script that must not block can be tested
+    request = function(url)
+      env.httpRequests[#env.httpRequests + 1] = url
+      local base = tostring(url):gsub("%?.*$", "")
+      local body = urls[base] or urls[url]
+      if body == nil then
+        queue[#queue + 1] = { "http_failure", url, "404: Not Found" }
+      else
+        local pos = 1
+        queue[#queue + 1] = { "http_success", url, {
+          readAll = function() return body end,
+          readLine = function()
+            if pos > #body then return nil end
+            local nl = body:find(string.char(10), pos, true) or (#body + 1)
+            local line = body:sub(pos, nl - 1)
+            pos = nl + 1
+            return line
+          end,
+          getResponseCode = function() return 200 end,
+          close = function() end,
+        } }
+      end
+    end,
     checkURL = function() return true end,
   }
 
@@ -614,6 +665,7 @@ function mock.newEnv(opts)
     local ok, err = pcall(function() return chunk(table.unpack(args)) end)
     env.internals = G.__VAULT_TEST.internals
     env.frame = screen:view()
+    for name, extra in pairs(extraScreens) do env.frames[name] = extra:view() end
     env.termFrame = termScreen:view()
     return ok, err
   end
