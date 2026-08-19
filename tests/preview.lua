@@ -3,6 +3,7 @@
 --   stock: stock | movers | vaults | detail
 --   rail:  departures | arrivals | platform | summary | onboard | route
 --          | concourse
+--   warn:  warn  (a 1x7 strip of monitors is about 108x10)
 local here = (arg and arg[0] or "tests/preview.lua"):gsub("[^/\\]+$", "")
 if here == "" then here = "./" end
 package.path = here .. "?.lua;" .. package.path
@@ -11,8 +12,59 @@ local mock = require("cc_mock")
 local keys = mock.KEYS
 
 local view   = (arg[1] or "stock"):lower()
-local width  = tonumber(arg[2]) or 82
-local height = tonumber(arg[3]) or 26
+local width  = tonumber(arg[2]) or (view == "warn" and 108) or 82
+local height = tonumber(arg[3]) or (view == "warn" and 10) or 26
+
+--------------------------------------------------------------------- render
+-- Paint a captured frame with the script's own palette, in 24-bit ANSI colour.
+-- CC draws with 2x3 block glyphs at 128-159; a terminal has the same shapes in
+-- the Unicode sextant block, which skips the plain left half block.
+local function glyph(ch)
+  local byte = ch:byte()
+  if byte >= 128 and byte <= 159 then
+    local mask = byte - 128
+    if mask == 0 then return " " end
+    if mask == 21 then return utf8.char(0x258C) end
+    return utf8.char(0x1FB00 + (mask < 21 and mask - 1 or mask - 2))
+  end
+  if ch == "\7" then return utf8.char(0x25CF) end
+  return ch
+end
+
+local function render(frame, palette)
+  local HEX = "0123456789abcdef"
+  local rgbOf = {}
+  for i = 0, 15 do
+    local rgb = palette[2 ^ i] or 0x808080
+    rgbOf[HEX:sub(i + 1, i + 1)] = { (rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff }
+  end
+  io.write("\n")
+  for y = 1, frame.h do
+    io.write("  ")
+    for x = 1, frame.w do
+      local f, b = rgbOf[frame.fg[y][x]], rgbOf[frame.bg[y][x]]
+      io.write(string.format("\27[38;2;%d;%d;%dm\27[48;2;%d;%d;%dm",
+        f[1], f[2], f[3], b[1], b[2], b[3]), glyph(frame.ch[y][x]))
+    end
+    io.write("\27[0m\n")
+  end
+  io.write("\n")
+end
+
+--------------------------------------------------------------------- warn
+-- The hazard sign, mid-scroll: a few ticks in, so the ribbon is under way.
+if view == "warn" or view == "sign" then
+  local events = {}
+  for i = 1, tonumber(arg[4]) or 12 do events[i] = { "timer", i } end
+  local env = mock.newEnv({ width = width, height = height, events = events })
+  local ok, err = env.run(here .. "../scripts/warn.lua")
+  if not ok then
+    io.write("script error: ", tostring(err), "\n")
+    os.exit(1)
+  end
+  render(env.frame, env.internals.palette)
+  return
+end
 
 --------------------------------------------------------------------- rail
 local RAIL = {
@@ -51,39 +103,7 @@ if RAIL[view] then
     io.write("script error: ", tostring(err), "\n")
     os.exit(1)
   end
-  local frame = env.frame
-  local palette = env.internals.palette
-  local HEX = "0123456789abcdef"
-  local rgbOf = {}
-  for i = 0, 15 do
-    local rgb = palette[2 ^ i] or 0x808080
-    rgbOf[HEX:sub(i + 1, i + 1)] = { (rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff }
-  end
-  -- CC draws with 2x3 block glyphs at 128-159; a terminal has the same shapes
-  -- in the Unicode sextant block, which skips the plain left half block
-  local function glyph(ch)
-    local byte = ch:byte()
-    if byte >= 128 and byte <= 159 then
-      local mask = byte - 128
-      if mask == 0 then return " " end
-      if mask == 21 then return utf8.char(0x258C) end
-      return utf8.char(0x1FB00 + (mask < 21 and mask - 1 or mask - 2))
-    end
-    if ch == "\7" then return utf8.char(0x25CF) end
-    return ch
-  end
-
-  io.write("\n")
-  for y = 1, frame.h do
-    io.write("  ")
-    for x = 1, frame.w do
-      local f, b = rgbOf[frame.fg[y][x]], rgbOf[frame.bg[y][x]]
-      io.write(string.format("\27[38;2;%d;%d;%dm\27[48;2;%d;%d;%dm",
-        f[1], f[2], f[3], b[1], b[2], b[3]), glyph(frame.ch[y][x]))
-    end
-    io.write("\27[0m\n")
-  end
-  io.write("\n")
+  render(env.frame, env.internals.palette)
   return
 end
 
@@ -155,31 +175,4 @@ if not ok then
 end
 
 -- render with the script's own palette, using 24-bit ANSI colour
-local frame = env.frame
-local palette = env.internals.palette
-local HEX = "0123456789abcdef"
-local rgbOf = {}
-for i = 0, 15 do
-  local rgb = palette[2 ^ i] or 0x808080
-  rgbOf[HEX:sub(i + 1, i + 1)] = {
-    (rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff,
-  }
-end
-
-local function ansi(fg, bg)
-  local f, b = rgbOf[fg], rgbOf[bg]
-  return string.format("\27[38;2;%d;%d;%dm\27[48;2;%d;%d;%dm",
-    f[1], f[2], f[3], b[1], b[2], b[3])
-end
-
-io.write("\n")
-for y = 1, frame.h do
-  io.write("  ")
-  for x = 1, frame.w do
-    local ch = frame.ch[y][x]
-    if ch == "\149" then ch = "\226\150\140" end   -- left half block
-    io.write(ansi(frame.fg[y][x], frame.bg[y][x]), ch)
-  end
-  io.write("\27[0m\n")
-end
-io.write("\n")
+render(env.frame, env.internals.palette)

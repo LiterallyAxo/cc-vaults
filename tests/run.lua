@@ -9,7 +9,7 @@ package.path = here .. "?.lua;" .. package.path
 
 local H = require("harness")
 
-local suites = { "test_rail", "test_stock", "test_vaults" }
+local suites = { "test_rail", "test_stock", "test_vaults", "test_warn" }
 for _, suite in ipairs(suites) do
   io.write("\n", suite, "\n")
   require(suite)

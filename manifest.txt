@@ -6,3 +6,4 @@
 vaults | vaults.lua        | 2.0.0 | Installer and launcher for these scripts
 stock  | scripts/stock.lua | 1.2.0 | Live Create vault stock dashboard
 rail   | scripts/rail.lua  | 0.8.0 | UK style train information displays
+warn   | scripts/warn.lua  | 0.1.0 | Scrolling hazard sign for a line of monitors

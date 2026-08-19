@@ -21,6 +21,7 @@ stock
 | --- | --- |
 | [`stock`](scripts/stock.lua) | Live Create Item Vault dashboard on a monitor |
 | [`rail`](scripts/rail.lua) | UK style train information displays for Create trains |
+| [`warn`](scripts/warn.lua) | Scrolling hazard sign for a long line of monitors |
 | [`vaults`](vaults.lua) | The package manager itself — it is in the manifest too, so it updates itself |
 
 More are coming; adding one is a single line in `manifest.txt`, no installer
@@ -380,6 +381,86 @@ through a Display Link. It sizes itself to the target: eight characters or
 fewer gets just the departure time, anything wider gets time, destination and
 status, with the platform and calling points on the second line.
 
+---
+
+# warn — the hazard sign
+
+Built for a long thin line of monitors over a doorway — a **1x7 strip** is what
+it was written on — and aimed squarely at the sort of blast doors that close
+whether or not you are still standing in them.
+
+```
+###    ####    ####    ####    ####    ####    ####    ####    ####    ####
+##    ####    ####    ####    ####    ####    ####    ####    ####    ####
+#    ####    ####    ####    ####    ####    ####    ####    ####    ####
+
+#  #   #       #   #  ###  #   # ####         #### ##### ##### ####
+ # #   #       #   # #   # #   # #   #       #       #   #     #   #
+   #   #        # #  #   # #   # #   #       #       #   #     #   #
+   #####         #   #   # #   # ####         ###    #   ####  ####
+   #   #         #   #   # #   # # #             #   #   #     #
+ # #   #         #   #   # #   # #  #            #   #   #     #
+#  #   #         #    ###   ###  #   #       ####    #   ##### #
+
+   ####    ####    ####    ####    ####    ####    ####    ####    ####    #
+  ####    ####    ####    ####    ####    ####    ####    ####    ####    ##
+ ####    ####    ####    ####    ####    ####    ####    ####    ####    ###
+```
+
+Every monitor on the network is treated as **one continuous ribbon**, in
+peripheral-name order, so the text scrolls off one screen and onto the next.
+A 1x7 line of monitor blocks merges into a single monitor and is just the one
+screen as far as `warn` is concerned; separate screens in a row work too, as
+long as you hang them in the same order the computer names them. `warn size`
+prints that order.
+
+The letters are a 5x7 dot matrix drawn with CC's 2x3 block glyphs, which gives
+the strip three times the vertical resolution the character grid has, and they
+are sized to whatever height the monitor turns out to be. Below five rows the
+chevrons are dropped; below the height of one letter it falls back to ordinary
+scrolling text, so it still says something on a one-block sign.
+
+| Command | What it does |
+| --- | --- |
+| `warn` | scroll the built in messages |
+| `warn <text...>` | scroll your own text instead — `\|` splits it into several messages |
+| `warn size` | what each monitor measures, and the order they read in |
+| `warn setup` | write a starter `warn.cfg` |
+| `warn help` | the list |
+
+Tap a monitor, or press `n`, to skip to the next message; `q` stops it.
+`vaults startup warn on` brings it back after a server restart.
+
+## What it says
+
+`WATCH YOUR STEP` is the headline, and it comes back round between every other
+message. The rest are about the doors:
+
+> MIND THE DOORS. THE DOORS DO NOT MIND YOU. · THESE DOORS WEIGH 400 TONNES.
+> YOU WEIGH SIX PORK CHOPS. · DAYS SINCE THE LAST DOOR RELATED INCIDENT: 0 ·
+> IF THE DOOR IS CLOSING, IT IS CLOSING WITH OR WITHOUT YOU. · IN THE EVENT OF
+> A CREEPER THE DOORS WILL BE FINE. YOU WILL NOT. · NO RUNNING. NO PUSHING. NO
+> BECOMING PART OF THE DOOR. · THE DOOR HAS RIGHT OF WAY. THE DOOR HAS ALWAYS
+> HAD RIGHT OF WAY. · IRON DOORS: UNBEATEN IN 1,247 CONSECUTIVE ARGUMENTS. ·
+> STAND CLEAR OF THE THRESHOLD. IT IS NOT A PHOTO OPPORTUNITY. · THE DOORS OPEN
+> AT WALKING PACE. SO SHOULD YOU.
+
+## warn.cfg
+
+`warn setup` writes a template; it is a Lua table and every field is optional.
+
+| Field | Default | What it is |
+| --- | --- | --- |
+| `headline` | `"WATCH YOUR STEP"` | shown again between every other message |
+| `messages` | the ten above | your own list, replacing them |
+| `theme` | `"amber"` | `"amber"` or `"red"`; basic monitors go white |
+| `speed` | `3` | letters per second the ribbon moves |
+| `scroll` | `0.15` | seconds between frames |
+| `stripes` | `true` | hazard chevrons along the top and bottom |
+| `scale` | `0` | letter size in pixels, `0` fits the screen |
+| `maxScale` | `4` | how big "fits the screen" is allowed to get |
+| `textScale` | `0.5` | monitor text scale |
+
 ## Development
 
 The repo ships a small CC: Tweaked emulator so the scripts can be tested and
@@ -387,10 +468,11 @@ previewed without launching Minecraft. You need a normal Lua 5.4 interpreter
 (`winget install DEVCOM.Lua`).
 
 ```
-lua tests/run.lua                    # 126 tests across both scripts and the manager
+lua tests/run.lua                    # 192 tests across the scripts and the manager
 lua tests/preview.lua stock 121 18   # render a view in your terminal, in colour
 lua tests/preview.lua movers|vaults|detail [width] [height]
 lua tests/preview.lua departures|arrivals|platform|summary|onboard|route|concourse
+lua tests/preview.lua warn 108 10    # the hazard sign, mid-scroll
 ```
 
 `tests/cc_mock.lua` fakes peripherals (vaults, Create train stations, CC:C
@@ -406,6 +488,7 @@ vaults.lua          the package manager (installed as vaults.lua)
 manifest.txt        name | file | version | description, one script per line
 scripts/stock.lua   the dashboard (installed as stock.lua)
 scripts/rail.lua    the train displays (installed as rail.lua)
+scripts/warn.lua    the hazard sign (installed as warn.lua)
 RAIL-SETUP.md       step by step guide to setting the train displays up
 tests/              CC emulator, test suites, terminal preview tool
 docs/               offline CC: Tweaked + CC:C Bridge reference (docs/README.md)

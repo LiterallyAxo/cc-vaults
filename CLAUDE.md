@@ -16,6 +16,9 @@ manifest.txt        name | file | version | description, one line per script
 scripts/stock.lua   Create vault dashboard; installed as stock.lua, run as `stock`
 scripts/rail.lua    UK style train boards for Create trains; run as `rail [mode]`
                     (`rail.dat` on the computer holds the timings it learned)
+scripts/warn.lua    scrolling hazard sign for a long line of monitors; run as
+                    `warn` (`warn.cfg` on the computer holds the player's own
+                    messages)
 RAIL-SETUP.md       player facing setup walkthrough for rail (README is reference)
 docs/               offline CC: Tweaked and CC:C Bridge docs (see docs/README.md)
 tests/              CC emulator, test suites, terminal preview tool
@@ -33,6 +36,7 @@ luac -p vaults.lua scripts/*.lua       # syntax check
 lua tests/preview.lua stock 121 18     # render a view in the terminal, in colour
 lua tests/preview.lua movers|vaults|detail [w] [h]
 lua tests/preview.lua departures|arrivals|platform|summary|onboard|route|concourse
+lua tests/preview.lua warn 108 10      # the hazard sign, mid-scroll
 python tools/fetch_docs.py             # refresh docs/
 ```
 
@@ -119,6 +123,14 @@ Full docs are in `docs/` — grep there before guessing. The ones that bite:
 - The in-game clock runs 72x, so one real second is 1.2 in-game minutes.
   Anything the player can time with a stopwatch (`dwell`, `legRun`) is
   configured in real seconds and converted with `minutesFor`.
+- Monitor blocks placed edge to edge merge into one peripheral, so a "1x7 line
+  of monitors" is a single wide screen, not seven. `warn` lays every monitor on
+  the network end to end in peripheral-name order and treats them as one
+  ribbon, which covers both cases.
+- The 2x3 drawing glyphs (128-159) are the only way to get sub-character
+  detail; `rail`'s `Canvas:sprite` and `warn`'s renderer both use the same
+  trick, including inverting the mask and swapping the two colours when the
+  bottom right pixel is set, which the glyph range does not cover.
 - Blocks on a moving Create contraption are not ticked, so a computer inside an
   assembled train is dead until it is disassembled — onboard displays have to
   be driven from the lineside.
