@@ -263,12 +263,13 @@ leave out keeps its default.
 | `refresh` | `5` | seconds between peripheral scans |
 | `scroll` | `0.4` | seconds per column of scrolling text |
 | `rows` | `0` | departures to list; `0` means as many as fit |
-| `dwell` / `legRun` | `1` / `6` | minutes a train stands, and minutes assumed between stops |
+| `dwell` / `legRun` | `10` / `45` | **real seconds** a train stands, and a leg takes; converted to in-game minutes (1s = 1.2m) |
+| `memory` | `30` | in-game minutes a platform stays on the board after its train has gone |
 | `platforms` | `{}` | Train Station peripheral (or in-game name) to platform number |
 | `timetable` | `{}` | the booked services; see below |
 | `train` / `route` | `nil` | onboard and route displays: the Create train name and the stations it works through |
 | `messages` | safety notices | the scrolling line along the bottom |
-| `demo` | `true` | invent a timetable when nothing is wired up |
+| `demo` | `true` | invent a timetable when nothing is wired up; ignored once a station is visible |
 
 A timetable entry looks like a line out of a real one:
 

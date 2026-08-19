@@ -525,7 +525,7 @@ computer 12: Create Central, 6 services
 **The thing that will actually catch you out:** a computer in an unloaded chunk
 is switched off. If the far station is not chunk-loaded, its hub stops
 broadcasting whenever nobody is there, and the boards fall back to their own
-data after about three in-game minutes. Whatever you normally use to keep
+data after three missed broadcasts. Whatever you normally use to keep
 chunks loaded applies to the hub computer too.
 
 ## 14. Make it start on its own
@@ -592,7 +592,7 @@ display prop look alive.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| Board shows an obviously fake timetable | Nothing real is connected yet | Section 6; `demo = false` to stop it |
+| Board shows an obviously fake timetable | Nothing real is connected yet | Section 6; demo switches itself off once a station is visible |
 | `rail stations` finds nothing | A wired modem is not switched on | Right-click each modem until it is red |
 | Stations found but `[not ours]` | `station` does not match their names | Section 8 |
 | `platform -` in the listing | No number in the station name | Add one, or use `platforms` |
@@ -601,7 +601,7 @@ display prop look alive.
 | Text runs off the screen | Monitor too small | Check the printed size; add a block or use `summary` |
 | Colours look wrong or washed out | Basic rather than Advanced Monitor | Use an Advanced Monitor |
 | Board never updates over radio | Wrong modem, or names differ | `rail link` |
-| Board goes back to demo data | Hub went quiet for a few minutes | Chunk loading, section 13 |
+| Board goes back to demo data | Hub went quiet, and this display sees no station of its own | Chunk loading, section 13 |
 | Everything stops after a reload | Computer restarted with no startup file | `vaults startup rail on` |
 | Palette stayed weird after quitting | Program was killed rather than quit | Run it again and press `Q` |
 
@@ -623,8 +623,10 @@ return {
   rotate    = 6,          -- seconds a rotating message stays up
   rows      = 0,          -- departures to list, 0 for as many as fit
   platform  = nil,        -- the platform a platform/summary display serves
-  dwell     = 1,          -- minutes a train is booked to stand
-  legRun    = 6,          -- minutes assumed between calling points
+  dwell     = 10,         -- real seconds a train stands at a platform
+  legRun    = 45,         -- real seconds a train takes to reach the next one
+  memory    = 30,         -- in-game minutes a platform stays on the board
+                          -- after its train has gone
   train     = nil,        -- onboard/route: the Create train name to follow
   coach     = nil,        -- onboard: coach letter for the corner
   route     = nil,        -- onboard/route: station names in order

@@ -223,6 +223,76 @@ describe("rail: reading Create stations", function()
     H.screenHas(env.frame, "London Euston")
   end)
 
+  it("keeps the pattern on the board after the train has left entirely", function()
+    local env = stationEnv({
+      events = { function(inner)
+        -- the train has gone: not present, not imminent, not even signalled
+        local station = inner.stations["create:track_station_0"]
+        station.present, station.imminent, station.enroute = false, false, false
+        inner.pushNext({ "timer", 1 })
+      end },
+    })
+    H.runOk(env, SCRIPT)
+    eq(env.internals.state.source, "live", "an empty platform is not a demo")
+    local service = env.internals.state.services[1]
+    eq(service.dest, "London Euston")
+    H.truthy(service.expected, "with nothing in sight it is Expected, not On time")
+    H.screenHas(env.frame, "London Euston")
+    H.screenHas(env.frame, "Expected")
+  end)
+
+  it("never invents departures at a station it can actually see", function()
+    local env = newEnv({
+      stations = {
+        ["create:track_station_0"] = { name = "Create Central Platform 3" },
+      },
+    })
+    H.runOk(env, SCRIPT)
+    eq(env.internals.state.source, "none")
+    eq(#env.internals.state.services, 0)
+    -- "Liverpool Lime Street" only ever appears in the demo timetable
+    H.screenLacks(env.frame, "Liverpool Lime Street")
+  end)
+
+  it("writes what it learned to disk and reads it back on the next boot", function()
+    local first = stationEnv()
+    H.runOk(first, SCRIPT)
+    local saved = first.files["rail.dat"]
+    H.truthy(saved, "rail.dat was not written")
+
+    -- a fresh computer, nothing standing at the platform, but it remembers
+    local second = newEnv({
+      files = { ["rail.dat"] = saved },
+      stations = {
+        ["create:track_station_0"] = { name = "Create Central Platform 3" },
+      },
+    })
+    H.runOk(second, SCRIPT)
+    eq(second.internals.state.known["3"].dest, "London Euston")
+    H.contains(second.printed(), "remembered")
+  end)
+
+  it("measures how often a platform turns round instead of guessing", function()
+    local env
+    -- `r` forces a rescan; the scan timer gets a fresh id every time it fires,
+    -- so a pushed `timer 1` only ever lands once
+    local function rescan(inner) inner.pushNext({ "key", inner.keys.r }) end
+    env = stationEnv({
+      events = { function(inner)
+        local station = inner.stations["create:track_station_0"]
+        station.present = false
+        inner.setTime(15.5)              -- half an in-game hour later
+        rescan(inner)
+      end, function(inner)
+        local station = inner.stations["create:track_station_0"]
+        station.present, station.train = true, "1A25"
+        rescan(inner)
+      end },
+    })
+    H.runOk(env, SCRIPT)
+    eq(env.internals.state.known["3"].every, 30, "30 in-game minutes between trains")
+  end)
+
   it("tracks where each train was last seen", function()
     local env = stationEnv()
     H.runOk(env, SCRIPT)

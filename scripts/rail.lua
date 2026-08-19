@@ -1,5 +1,5 @@
 --[[
-  rail  --  UK style train information displays for CC: Tweaked        v0.3.1
+  rail  --  UK style train information displays for CC: Tweaked        v0.4.0
 
   Part of the cc-vaults package; install it with `vaults install rail`.
 
@@ -31,7 +31,7 @@
     right-click each modem until it says "peripheral attached", then a monitor
 ]]
 
-local VERSION = "0.3.1"
+local VERSION = "0.4.0"
 local CONFIG  = "rail.cfg"
 
 --------------------------------------------------------------------- config
@@ -48,8 +48,10 @@ local config = {
   rotate    = 6,                -- seconds a rotating message stays up
   rows      = 0,                -- departures to list (0 = as many as fit)
   platform  = nil,              -- platform this display serves
-  dwell     = 1,                -- minutes a train is booked to stand
-  legRun    = 6,                -- minutes assumed between calling points
+  dwell     = 10,               -- seconds a train stands at a platform
+  legRun    = 45,               -- seconds a train takes to reach the next one
+  memory    = 30,               -- minutes to keep showing a platform we have
+                                -- seen a train at but cannot see one at now
   train     = nil,              -- onboard/route: the Create train name
   coach     = nil,              -- onboard: coach letter, shown in the corner
   route     = nil,              -- onboard/route: station names, in order
@@ -402,6 +404,18 @@ local function hhmm(minutes)
   return string.format("%02d:%02d", math.floor(minutes / 60), minutes % 60)
 end
 
+-- The in-game clock runs at 72x, so a real second is 1.2 in-game minutes (a
+-- Minecraft day is 20 real minutes = 1440 in-game ones).  Everything the
+-- player can time with a stopwatch -- how long a train stands, how long a leg
+-- takes -- is configured in real seconds and converted here, or the board ends
+-- up promising a train in "six minutes" that is really five seconds away.
+local MC_MINUTES_PER_SECOND = 1.2
+
+local function minutesFor(seconds)
+  if config.clock == "real" then return (seconds or 0) / 60 end
+  return (seconds or 0) * MC_MINUTES_PER_SECOND
+end
+
 local function clockText()
   if config.clock == "real" then return os.date("%H:%M") end
   return hhmm(nowMinutes())
@@ -432,6 +446,50 @@ local state = {
   lastScan = 0,
   hubSeen  = 0,
 }
+
+-------------------------------------------------------------------- memory
+-- What each platform last served, kept on disk.  A schedule can only be read
+-- while the train is standing there, so a computer that forgets on reboot has
+-- to wait for the next train before it can name a single calling point.
+
+local MEMORY = "rail.dat"
+
+local function quote(value)
+  if type(value) == "number" then return tostring(value) end
+  return string.format("%q", tostring(value))
+end
+
+local function rememberKnown()
+  if not (fs and fs.open) then return end
+  local out = { "return {" }
+  for platform, entry in pairs(state.known) do
+    local calls = {}
+    for i, call in ipairs(entry.calls or {}) do calls[i] = quote(call) end
+    out[#out + 1] = string.format(
+      "  [%s] = { dest = %s, origin = %s, seen = %s, every = %s, train = %s, calls = { %s } },",
+      quote(platform), quote(entry.dest or ""),
+      entry.origin and quote(entry.origin) or "nil",
+      quote(entry.seen or 0), entry.every and quote(entry.every) or "nil",
+      entry.train and quote(entry.train) or "nil", table.concat(calls, ", "))
+  end
+  out[#out + 1] = "}"
+  local handle = fs.open(MEMORY, "w")
+  if not handle then return end
+  handle.write(table.concat(out, "\n"))
+  handle.close()
+end
+
+local function recallKnown()
+  if not (fs and fs.exists and fs.exists(MEMORY)) then return end
+  local handle = fs.open(MEMORY, "r")
+  if not handle then return end
+  local src = handle.readAll()
+  handle.close()
+  local chunk = load(src, MEMORY, "t", {})
+  if not chunk then return end
+  local ok, result = pcall(chunk)
+  if ok and type(result) == "table" then state.known = result end
+end
 
 --------------------------------------------------------------------- live
 local function callMethod(p, method, ...)
@@ -593,32 +651,68 @@ local function liveServices(now)
       local stops = scheduleStops(station.schedule)
       local calls = onwardCalls(stops, station.name)
       if #calls > 0 then
-        state.known[key] = {
+        local was = state.known[key]
+        local entry = {
           calls  = calls,
           dest   = calls[#calls],
           origin = previousCall(stops, station.name),
+          seen   = now,
+          train  = station.train,
         }
+        -- How often this platform actually turns round, measured rather than
+        -- assumed: Create gives no arrival estimate, so the only honest way to
+        -- say when the next one is due is to time the last one.
+        if was then
+          entry.every = was.every
+          if was.train ~= station.train and was.seen then
+            local gap = (now - was.seen) % 1440
+            if gap > 0 and gap < 720 then
+              entry.every = was.every and (was.every + gap) / 2 or gap
+            end
+          end
+        end
+        state.known[key] = entry
+        rememberKnown()
       end
     end
+
     local known = state.known[key]
-    if known and (station.present or station.imminent or station.enroute) then
-      local wait = config.legRun
-      if station.present then wait = config.dwell
-      elseif station.imminent then wait = math.max(1, math.floor(config.dwell)) end
-      services[#services + 1] = {
-        platform = key,
-        dest     = known.dest,
-        calls    = known.calls,
-        origin   = known.origin,
-        train    = station.train,
-        depart   = now + wait,
-        arrive   = now + (station.present and 0 or wait),
-        present  = station.present,
-        imminent = station.imminent,
-        enroute  = station.enroute,
-        operator = config.operator,
-        live     = true,
-      }
+    if known then
+      local here = station.present or station.imminent or station.enroute
+      local since = (now - (known.seen or now)) % 1440
+      -- Keep the platform on the board after the train has gone.  Dropping it
+      -- the moment `isTrainPresent` goes false is what used to leave the board
+      -- with nothing to show, and nothing is where the demo timetable crept in.
+      if here or since <= (config.memory or 30) then
+        local wait
+        if station.present then
+          wait = minutesFor(config.dwell)
+        elseif station.imminent then
+          wait = math.min(minutesFor(config.dwell), minutesFor(config.legRun))
+        elseif station.enroute then
+          wait = minutesFor(config.legRun)
+        else
+          -- nothing in sight: due back one full round trip after the last one
+          wait = (known.every or minutesFor(config.legRun)) - since
+          if wait < 0 then wait = 0 end
+        end
+        services[#services + 1] = {
+          platform = key,
+          dest     = known.dest,
+          calls    = known.calls,
+          origin   = known.origin,
+          train    = station.train or known.train,
+          depart   = now + wait,
+          arrive   = now + (station.present and 0 or wait),
+          present  = station.present,
+          imminent = station.imminent,
+          enroute  = station.enroute,
+          expected = not here,
+          every    = known.every,
+          operator = config.operator,
+          live     = true,
+        }
+      end
     end
   end
   return services
@@ -699,7 +793,7 @@ local function demoServices(now)
       operator  = row.operator,
       train     = string.format("%dC%02d", 1 + (i % 9), i * 7 % 90),
       depart    = depart,
-      arrive    = depart - config.dwell,
+      arrive    = depart - minutesFor(config.dwell),
       delay     = row.delay,
       cancelled = row.cancelled,
       wait      = row.after,
@@ -766,6 +860,9 @@ local function statusOf(service)
   if type(service.delay) == "number" and service.delay > 0 then
     return hhmm(expectedOf(service)), theme.late
   end
+  -- remembered from the last train through, with none in sight yet: the real
+  -- railway says "Expected" rather than claiming a train is running to time
+  if service.expected then return "Expected", theme.dim end
   return "On time", theme.good
 end
 
@@ -781,7 +878,10 @@ local function refresh()
     state.source = "live"
     for _, service in ipairs(live) do service.wait = service.depart - now end
     services = live
-  elseif config.demo then
+  -- A computer that can see a real station never invents one.  An empty board
+  -- at a real station is the truth; the demo timetable is only there so a
+  -- computer with nothing wired to it still shows you what a board looks like.
+  elseif config.demo and #state.stations == 0 and next(state.known) == nil then
     state.source = "demo"
     services = demoServices(now)
   else
@@ -1136,7 +1236,7 @@ local function journey()
   local now = nowMinutes()
   local times = {}
   for i = 1, #route do
-    times[i] = now + (i - index) * config.legRun
+    times[i] = now + (i - index) * minutesFor(config.legRun)
   end
   return {
     route    = route,
@@ -1353,6 +1453,14 @@ return {
   theme    = "dot",       -- "dot" amber dot matrix, "lcd" modern screen
   clock    = "mc",        -- "mc" in-game time, "real" your own clock
   platform = nil,         -- set on platform and summary displays, e.g. 3
+
+  -- The in-game clock runs 72x faster than real time, so these are in REAL
+  -- seconds -- time a train with a stopwatch and put the number here.
+  dwell    = 10,          -- how long a train stands at a platform
+  legRun   = 45,          -- how long it takes to reach the next station
+  memory   = 30,          -- in-game minutes a platform stays on the board
+                          -- after its train has gone; rail learns the real
+                          -- interval once it has seen two trains through
 
   -- Which Create station block is which platform.  The key is either the
   -- peripheral name (see `rail hub`) or the name you gave the station in game.
@@ -1582,6 +1690,13 @@ print(mon and ("display: " .. peripheral.getName(mon) .. " " ..
           or  ("display: terminal " .. canvas.w .. "x" .. canvas.h))
 print("keys: [q]uit  [r]efresh  [tab] next mode")
 
+recallKnown()
+if next(state.known) then
+  local count = 0
+  for _ in pairs(state.known) do count = count + 1 end
+  print("remembered " .. count .. " platform(s) from " .. MEMORY)
+end
+
 link.start()
 -- the headless modes leave the terminal colours alone; they only print
 if mode ~= "hub" and mode ~= "flap" then applyPalette() end
@@ -1605,8 +1720,11 @@ local ok, err = pcall(function()
 
     if name == "timer" then
       if event[2] == scanTimer then
-        -- a hub that is still talking to us knows more than our own scan does
-        if state.source ~= "hub" or (nowMinutes() - state.hubSeen) > 3 then
+        -- A hub that is still talking to us knows more than our own scan does.
+        -- Give it three broadcasts to go quiet before taking over -- in-game
+        -- minutes, so this has to be converted or it expires between them.
+        local quiet = (nowMinutes() - state.hubSeen) % 1440
+        if state.source ~= "hub" or quiet > minutesFor(config.refresh * 3) then
           refresh()
         end
         if mode == "hub" then
